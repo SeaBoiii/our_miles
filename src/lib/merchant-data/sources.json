@@ -1,0 +1,16 @@
+{
+  "retrievedAt": "2026-10-07",
+  "codes": {
+    "repository": "https://github.com/greggles/mcc-codes",
+    "revision": "df792275c567946119a8903d36dbd33e44a248bf",
+    "license": "Unlicense",
+    "count": 981
+  },
+  "merchants": {
+    "repository": "https://github.com/pointspick/mcc-database",
+    "revision": "18c6b42f8a07c9ca92956fb3be35cbc158383d86",
+    "license": "MIT (README grant)",
+    "sourceUpdatedAt": "2026-03-03",
+    "count": 6569
+  }
+}

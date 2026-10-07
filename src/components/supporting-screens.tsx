@@ -31,6 +31,7 @@ import {
 import { categories } from "./finder-screen";
 import { Landscape, Progress, SectionHeading, Sheet } from "./primitives";
 import type { Store, View } from "./miles-app";
+import { CardArt } from "./card-art";
 
 type Props = {
   store: Store;
@@ -956,7 +957,7 @@ export function ActivityScreen({ store, go, notify }: Props) {
         <h1>Our activity.</h1>
         <p>
           {items.length
-            ? `${formatMiles(estimate)} estimated miles across ${items.filter((t) => t.status !== "reversed").length} purchases.`
+            ? `${formatMiles(estimate)} estimated miles across ${items.filter((t) => t.status !== "reversed").length} ${items.filter((t) => t.status !== "reversed").length === 1 ? "purchase" : "purchases"}.`
             : "A little record of every step forward."}
         </p>
       </div>
@@ -1081,9 +1082,7 @@ function ActivityRow({
     <div
       className={`activity-row ${t.status === "reversed" ? "reversed" : ""}`}
     >
-      <span className="transaction-icon">
-        <Icon size={18} />
-      </span>
+      {card ? <CardArt templateId={card.templateId} className="card-thumbnail activity-card-thumbnail" decorative /> : <span className="transaction-icon"><Icon size={18} /></span>}
       <div className="transaction-description">
         <strong>{t.merchant || "Purchase"}</strong>
         <span>
@@ -1118,6 +1117,7 @@ function TransactionDetail({
   const [postedDate, setPostedDate] = useState(today());
   return (
     <div className="transaction-detail">
+      {card && <div className="card-detail-art"><CardArt templateId={card.templateId} decorative /></div>}
       <div className="transaction-detail-amount">
         {formatMoney(t.amountSgd, 2)}
       </div>

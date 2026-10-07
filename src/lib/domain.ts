@@ -246,10 +246,31 @@ export interface Recommendation {
   reason: string;
   warnings: string[];
   capacityRemainingSgd: number | null;
+  /** Concise display copy; full calculation rationale remains in reason/snapshot. */
+  eligibilitySummary?: string;
   welcomeIncrementalMiles: number;
   minimumSpendIncrementalMiles: number;
   ruleId: string;
   snapshot: RewardSnapshot;
+}
+
+/** Setup gaps are separate from the rewards that can safely be estimated now. */
+export interface AssessmentBlocker {
+  id: "usage" | "statement" | "reward-component" | "minimum" | "category" | "annual" | "lifetime" | "mcc" | "partner";
+  cardId: string;
+  label: string;
+}
+
+export interface CardAssessment {
+  card: OwnedCard;
+  template: CardTemplate;
+  status: "ready" | "setup-needed" | "ineligible" | "manual-review" | "inactive";
+  /** Current conservative estimate; safe to record with its original snapshot. */
+  recommendation?: Recommendation;
+  /** Conditional comparison only. Never record this assumed-setup snapshot. */
+  potential?: Recommendation;
+  blockers: AssessmentBlocker[];
+  explanation: string;
 }
 
 export interface OfferProgress {

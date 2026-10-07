@@ -52,7 +52,7 @@ test("reaching the cap switches the next recommendation to the other owner", asy
   await expect(capped).toContainText("Bonus cap reached");
   await purchase(page, "512", "Insta360");
   await expect(page.locator(".recommendation")).toContainText("Use Nurul’s");
-  await expect(page.locator(".recommendation")).toContainText("S$780 left");
+  await expect(page.locator(".recommendation")).toContainText(/S\$780 (?:left|bonus capacity)/);
 });
 
 test("profile choice persists and breaks a tied recommendation across both wallets", async ({ page }) => {
@@ -119,7 +119,7 @@ test("a fresh wallet has no invented card ownership, balance, offers or recommen
   await purchaseWithoutWinner(page);
   await openApp(page, "wallet");
   await expect(page.locator(".wallet-toolbar")).toContainText("0 active");
-  await expect(page.getByText("Ownership unconfirmed", { exact: false }).first()).toBeVisible();
+  await expect(page.locator(".inactive-section").getByText("Ownership unconfirmed", { exact: false }).first()).toBeVisible();
   await openApp(page, "bonuses");
   await expect(page.getByText("A good welcome, when it fits.")).toBeVisible();
   await openApp(page, "activity");
@@ -197,4 +197,72 @@ test("installed public shell reopens offline demo records without caching privat
   expect(cached.some((path) => path.startsWith("/api/"))).toBe(false);
   await context.setOffline(false);
   await expect(page.locator(".connection-banner")).not.toBeVisible();
+});
+
+test("merchant suggestions retain sourced uncertainty and clear stale MCCs", async ({ page }) => {
+  await openApp(page, "what-card");
+  await page.getByLabel("Purchase amount in Singapore dollars").fill("100");
+  await page.locator("#merchant").fill("uniq");
+  await page.getByRole("option", { name: /UNIQLO/ }).click();
+  await page.getByText("Currency, wallet & merchant details", { exact: false }).click();
+  await expect(page.getByLabel("Merchant category code (MCC)", { exact: true })).toHaveValue("5651");
+  await expect(page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true })).not.toBeChecked();
+  await expect(page.locator(".confidence")).toContainText("Likely");
+  await page.locator("#merchant").fill("An unlisted local shop");
+  await expect(page.getByLabel("Merchant category code (MCC)", { exact: true })).toHaveValue("");
+  await expect(page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true })).toHaveCount(0);
+});
+
+test("higher rewards explain missing setup and return to the preserved purchase", async ({ page }) => {
+  const wallet = {
+    schemaVersion: 1,
+    cards: [
+      { id: "qa-nurul-citi", templateId: "citi-rewards", owner: "Nurul", status: "active", usageKnown: false, statementDay: 1 },
+      { id: "qa-aleem-trust", templateId: "trust-freedom", owner: "Aleem", status: "active", usageKnown: true },
+    ],
+    transactions: [], offers: [], goals: [], mileBalance: 0, mileValueSgd: 0.015,
+  };
+  await page.addInitScript((state) => { localStorage.setItem("our-miles-demo", JSON.stringify(state)); }, wallet);
+  await openApp(page, "what-card");
+  await page.getByLabel("Purchase amount in Singapore dollars").fill("512");
+  await page.locator("#merchant").fill("UNIQLO");
+  await page.getByRole("option", { name: /UNIQLO/ }).click();
+  await expect(page.getByRole("region", { name: "Higher rewards need setup", exact: true })).toContainText("Citi Rewards");
+  await page.getByRole("button", { name: "Check Citi Rewards setup", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("Citi Rewards");
+  await dialog.getByLabel(/I have checked this period/).check();
+  await dialog.getByLabel(/Bonus-eligible spend before our app records/).fill("0");
+  await dialog.getByRole("button", { name: "Save card", exact: true }).click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await expect(page.getByLabel("Purchase amount in Singapore dollars")).toHaveValue("512");
+  await expect(page.locator("#merchant")).toHaveValue("UNIQLO");
+  await expect(page.locator(".recommendation")).toContainText("Citi Rewards");
+  await expect(page.locator(".reward-miles")).toContainText("2,048");
+  await expect(page.locator(".recommendation .card-art img")).toBeVisible();
+});
+
+test("global merchant references and MCC descriptions need separate bank confirmation", async ({ page }) => {
+  await openApp(page, "what-card");
+  await page.getByLabel("Purchase amount in Singapore dollars").fill("100");
+  await page.locator("#merchant").fill("1Password");
+  await page.getByRole("option", { name: /^1Password .*Unverified MCC 5734$/ }).click();
+  await expect(page.locator(".merchant-evidence summary")).toContainText("Unverified MCC 5734");
+  await page.locator(".merchant-evidence summary").click();
+  await expect(page.getByRole("link", { name: "Merchant source", exact: true })).toHaveAttribute("href", "https://www.pointspick.com/tools/mcc-lookup");
+  await page.getByText("Currency, wallet & merchant details", { exact: false }).click();
+  await expect(page.getByLabel("Merchant category code (MCC)", { exact: true })).toHaveValue("5734");
+  await expect(page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true })).not.toBeChecked();
+  await expect(page.locator(".confidence")).toContainText("Unverified");
+  await page.locator(".merchant-directory > summary").click();
+  await page.getByLabel("Find an MCC code", { exact: true }).fill("5411");
+  await page.locator(".mcc-code-results").getByRole("button", { name: /^5411/ }).click();
+  await expect(page.getByLabel("Merchant category code (MCC)", { exact: true })).toHaveValue("5411");
+  await expect(page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true })).not.toBeChecked();
+  await page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true }).check();
+  await page.locator(".channel-field").getByRole("button", { name: "Contactless", exact: true }).click();
+  await expect(page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true })).not.toBeChecked();
+  const directoryLinks = await page.locator(".directory-links a").evaluateAll((links) => links.map((link) => (link as HTMLAnchorElement).href));
+  expect(directoryLinks.length).toBeGreaterThan(2);
+  expect(directoryLinks.every((href) => new URL(href).search === "")).toBe(true);
 });

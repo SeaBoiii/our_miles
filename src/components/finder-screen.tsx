@@ -12,13 +12,26 @@ import {
   MoreHorizontal,
   ScanLine,
   Check,
-  Info,
   ChevronDown,
   CreditCard,
+  Search,
 } from "lucide-react";
-import * as m from "motion/react-m";
-import { recommend } from "@/lib/engine";
+import { assessCards, recommend } from "@/lib/engine";
+import {
+  getMerchant,
+  merchantPurchaseHints,
+  searchMerchants,
+  MERCHANTS,
+  MERCHANT_REFERENCE_COUNT,
+  MERCHANT_LOOKUP_SOURCES,
+} from "@/lib/merchants";
+import {
+  searchMccCodes,
+  MCC_REFERENCE,
+  MCC_REFERENCE_SOURCE,
+} from "@/lib/mcc-reference";
 import type {
+  CardAssessment,
   Category,
   Channel,
   PaymentMethod,
@@ -27,6 +40,7 @@ import type {
   RewardPartner,
 } from "@/lib/domain";
 import { formatMiles, formatMoney, makeId, today } from "@/lib/state";
+import { CardArt } from "./card-art";
 import type { Store, View } from "./miles-app";
 
 export const categories: {
@@ -43,20 +57,53 @@ export const categories: {
   { id: "groceries", label: "Groceries", icon: ShoppingBasket },
   { id: "other", label: "Other", icon: MoreHorizontal },
 ];
+const currencies = [
+  "SGD",
+  "USD",
+  "NZD",
+  "AUD",
+  "EUR",
+  "GBP",
+  "MYR",
+  "JPY",
+  "THB",
+  "IDR",
+  "HKD",
+  "KRW",
+  "PHP",
+  "VND",
+  "CNY",
+  "TWD",
+  "CAD",
+  "CHF",
+  "INR",
+  "AED",
+];
+const rate = (r: Recommendation) =>
+  r.effectiveMpd > 0
+    ? `${r.effectiveMpd.toFixed(r.effectiveMpd % 1 ? 2 : 0)} mpd`
+    : `${formatMoney(r.cashbackSgd, 2)} cashback`;
+
 export function FinderScreen({
   store,
   quickCategory,
   go,
   notify,
+  onCardSetup,
 }: {
   store: Store;
   quickCategory: Category;
   go: (view: View) => void;
   notify: (message: string) => void;
+  onCardSetup: (cardId: string) => void;
 }) {
   const [category, setCategory] = useState<Category>(quickCategory);
   const [amount, setAmount] = useState("");
   const [merchant, setMerchant] = useState("");
+  const [merchantId, setMerchantId] = useState<string>();
+  const [lookupOpen, setLookupOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const [codeSearch, setCodeSearch] = useState("");
   const [channel, setChannel] = useState<Channel>(
     quickCategory === "online" || quickCategory === "travel"
       ? "online"
@@ -64,7 +111,8 @@ export function FinderScreen({
   );
   const [currency, setCurrency] = useState("SGD");
   const [method, setMethod] = useState<PaymentMethod>("card");
-  const [mcc, setMcc] = useState("");
+  const [manualMcc, setManualMcc] = useState("");
+  const [mccEdited, setMccEdited] = useState(false);
   const [mccConfirmed, setMccConfirmed] = useState(false);
   const [excluded, setExcluded] = useState(false);
   const [processedOverseas, setProcessedOverseas] = useState(false);
@@ -80,14 +128,50 @@ export function FinderScreen({
     setChannel(
       next === "online" || next === "travel" ? "online" : "contactless",
     );
-    setRecorded(false);
-    setMcc("");
+    setMerchantId(undefined);
+    setManualMcc("");
+    setMccEdited(false);
     setMccConfirmed(false);
+    setRecorded(false);
+  };
+  const selectedMerchant = merchantId ? getMerchant(merchantId) : undefined;
+  const hints = selectedMerchant
+    ? merchantPurchaseHints(selectedMerchant, channel)
+    : undefined;
+  const mcc = mccEdited
+    ? manualMcc
+    : hints?.mcc === undefined
+      ? ""
+      : String(hints.mcc).padStart(4, "0");
+  const suggestions = useMemo(() => searchMerchants(merchant), [merchant]);
+  const suggestionsVisible =
+    lookupOpen && suggestions.length > 0 && !selectedMerchant;
+  const chooseMerchant = (id: string) => {
+    const entry = getMerchant(id);
+    if (!entry) return;
+    setMerchant(entry.name);
+    setMerchantId(id);
+    setCategory(entry.category);
+    setManualMcc("");
+    setMccEdited(false);
+    setMccConfirmed(false);
+    setLookupOpen(false);
+    setActiveSuggestion(-1);
+    setExcluded(false);
+    setPartner("");
+    setFormError("");
+    setRecorded(false);
   };
   const valid =
     Number(amount) > 0 &&
     Number(amount) <= 1000000 &&
     (!mcc || /^\d{4}$/.test(mcc));
+  const purchaseMccConfidence = mccConfirmed
+    ? ("Confirmed" as const)
+    : !mccEdited && hints?.mcc !== undefined
+      ? hints.mccConfidence
+      : ("Unverified" as const);
+  const purchaseExcluded = excluded || !!hints?.excluded;
   const purchase: Purchase = useMemo(
     () => ({
       amountSgd: Number(amount),
@@ -100,15 +184,13 @@ export function FinderScreen({
       ...(mcc
         ? {
             mcc: Number(mcc),
-            mccConfidence: mccConfirmed
-              ? ("Confirmed" as const)
-              : ("Unverified" as const),
+            mccConfidence: purchaseMccConfidence,
           }
         : {}),
-      excluded,
+      excluded: purchaseExcluded,
       processedOverseas,
       recurring,
-      ...(partner ? {rewardPartner:partner} : {}),
+      ...(partner ? { rewardPartner: partner } : {}),
     }),
     [
       amount,
@@ -118,12 +200,19 @@ export function FinderScreen({
       method,
       currency,
       mcc,
-      mccConfirmed,
-      excluded,
+      purchaseMccConfidence,
+      purchaseExcluded,
       processedOverseas,
       recurring,
       partner,
     ],
+  );
+  const assessments = useMemo(
+    () =>
+      valid && store.state
+        ? assessCards(purchase, { ...store.state, preferredOwner: store.owner })
+        : [],
+    [valid, purchase, store.state, store.owner],
   );
   const results = useMemo(
     () =>
@@ -133,7 +222,16 @@ export function FinderScreen({
     [valid, purchase, store.state, store.owner],
   );
   const winner = recorded && recordedResult ? recordedResult : results[0];
+  const setupCandidates = assessments
+    .filter(
+      (a) =>
+        a.status === "setup-needed" &&
+        a.potential &&
+        (!winner || a.potential.netValueSgd > winner.netValueSgd + 0.01),
+    )
+    .sort((a, b) => b.potential!.netValueSgd - a.potential!.netValueSgd);
   const showResult = () => {
+    setLookupOpen(false);
     (document.activeElement as HTMLElement | null)?.blur();
     const result = document.getElementById("recommendation-result");
     result?.scrollIntoView({ behavior: "instant", block: "start" });
@@ -225,11 +323,11 @@ export function FinderScreen({
                 }}
               />
             </div>
-            <span className="muted small">
-              {currency === "SGD"
-                ? "Singapore dollars"
-                : `Enter the SGD equivalent of your ${currency} purchase`}
-            </span>
+            {currency !== "SGD" && (
+              <span className="muted small">
+                Enter the SGD equivalent of your {currency} purchase.
+              </span>
+            )}
           </div>
           <div className="mobile-result-action">
             <button
@@ -256,21 +354,135 @@ export function FinderScreen({
                     : "Mobile wallet"}
             </span>
           </div>
-          <label className="form-label">
-            Merchant <span className="optional">optional until you record</span>
-            <input
-              id="merchant"
-              type="text"
-              maxLength={160}
-              placeholder="e.g. Insta360, FairPrice, a restaurant"
-              value={merchant}
-              onChange={(e) => {
-                setMerchant(e.target.value);
-                setFormError("");
-                setRecorded(false);
-              }}
-            />
-          </label>
+          <div
+            className="merchant-lookup"
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget))
+                setLookupOpen(false);
+            }}
+          >
+            <label className="form-label" htmlFor="merchant">
+              Merchant{" "}
+              <span className="optional">optional until you record</span>
+            </label>
+            <div className="search-input">
+              <Search size={18} aria-hidden="true" />
+              <input
+                id="merchant"
+                type="text"
+                role="combobox"
+                aria-label="Merchant"
+                aria-autocomplete="list"
+                aria-expanded={suggestionsVisible}
+                aria-controls={
+                  suggestionsVisible ? "merchant-suggestions" : undefined
+                }
+                aria-activedescendant={
+                  suggestionsVisible && activeSuggestion >= 0
+                    ? `merchant-option-${activeSuggestion}`
+                    : undefined
+                }
+                maxLength={160}
+                autoComplete="off"
+                placeholder="Search a shop, airline or hotel"
+                value={merchant}
+                onFocus={(e) => {
+                  setLookupOpen(true);
+                  const lookup = e.currentTarget.closest(".merchant-lookup");
+                  const viewportHeight =
+                    window.visualViewport?.height ?? window.innerHeight;
+                  if (
+                    window.innerWidth <= 767 &&
+                    lookup &&
+                    lookup.getBoundingClientRect().bottom + 300 >
+                      viewportHeight - 90
+                  ) {
+                    lookup.scrollIntoView({
+                      block: "start",
+                      behavior: "instant",
+                    });
+                  }
+                }}
+                onChange={(e) => {
+                  setMerchant(e.target.value);
+                  setMerchantId(undefined);
+                  setMccEdited(false);
+                  setManualMcc("");
+                  setMccConfirmed(false);
+                  setActiveSuggestion(-1);
+                  setLookupOpen(true);
+                  setFormError("");
+                  setRecorded(false);
+                  setPartner("");
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setLookupOpen(false);
+                    setActiveSuggestion(-1);
+                  }
+                  if (!suggestionsVisible) return;
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setActiveSuggestion((i) => (i + 1) % suggestions.length);
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setActiveSuggestion(
+                      (i) => (i - 1 + suggestions.length) % suggestions.length,
+                    );
+                  }
+                  if (e.key === "Enter" && activeSuggestion >= 0) {
+                    e.preventDefault();
+                    chooseMerchant(suggestions[activeSuggestion].id);
+                  }
+                }}
+              />
+            </div>
+            {suggestionsVisible && (
+              <ul
+                id="merchant-suggestions"
+                className="merchant-suggestions"
+                role="listbox"
+                aria-label="Merchant matches"
+              >
+                {suggestions.map((entry, i) => (
+                  <li
+                    key={entry.id}
+                    id={`merchant-option-${i}`}
+                    role="option"
+                    aria-selected={i === activeSuggestion}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => chooseMerchant(entry.id)}
+                    className={i === activeSuggestion ? "selected" : ""}
+                  >
+                    <span>{entry.name}</span>
+                    <small>
+                      {entry.mccs.length === 1
+                        ? `${entry.mccConfidence ?? "Likely"} MCC ${String(entry.mccs[0]).padStart(4, "0")}`
+                        : "Check payment route"}
+                    </small>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {hints && (
+              <details className="merchant-evidence">
+                <summary>
+                  {hints.mcc === undefined
+                    ? "MCC varies · review source"
+                    : `${hints.mccConfidence} MCC ${String(hints.mcc).padStart(4, "0")}`}
+                  <ChevronDown size={14} />
+                </summary>
+                <p>{hints.note}</p>
+                <a href={hints.sourceUrl} target="_blank" rel="noreferrer">
+                  Merchant source <ArrowUpRight size={13} />
+                </a>
+                <span className="muted small">
+                  Checked {hints.lastVerifiedAt}
+                </span>
+              </details>
+            )}
+          </div>
           <fieldset className="channel-field">
             <legend>How are you paying?</legend>
             <div className="segmented">
@@ -288,6 +500,7 @@ export function FinderScreen({
                   className={channel === id ? "selected" : ""}
                   onClick={() => {
                     setChannel(id);
+                    setMccConfirmed(false);
                     setRecorded(false);
                   }}
                 >
@@ -298,8 +511,7 @@ export function FinderScreen({
           </fieldset>
           <details className="purchase-details">
             <summary>
-              Currency, wallet & merchant details
-              <ChevronDown size={16} />
+              Currency, wallet & merchant details <ChevronDown size={16} />
             </summary>
             <div className="advanced-form">
               <label className="form-label">
@@ -311,28 +523,7 @@ export function FinderScreen({
                     setRecorded(false);
                   }}
                 >
-                  {[
-                    "SGD",
-                    "USD",
-                    "NZD",
-                    "AUD",
-                    "EUR",
-                    "GBP",
-                    "MYR",
-                    "JPY",
-                    "THB",
-                    "IDR",
-                    "HKD",
-                    "KRW",
-                    "PHP",
-                    "VND",
-                    "CNY",
-                    "TWD",
-                    "CAD",
-                    "CHF",
-                    "INR",
-                    "AED",
-                  ].map((v) => (
+                  {currencies.map((v) => (
                     <option key={v}>{v}</option>
                   ))}
                 </select>
@@ -356,6 +547,7 @@ export function FinderScreen({
                   value={method}
                   onChange={(e) => {
                     setMethod(e.target.value as PaymentMethod);
+                    setMccConfirmed(false);
                     setRecorded(false);
                   }}
                 >
@@ -366,11 +558,39 @@ export function FinderScreen({
                   <option value="mobile-wallet">Other mobile wallet</option>
                 </select>
               </label>
-              <label className="check-label"><input type="checkbox" checked={recurring} onChange={e=>{setRecurring(e.target.checked);setRecorded(false);}} />Recurring payment / subscription</label>
-              <label className="form-label">Confirmed KrisFlyer UOB partner payment
-                <select value={partner} onChange={e=>{setPartner(e.target.value as RewardPartner | "");setRecorded(false);}}>
-                  <option value="">None / not confirmed</option><option value="singapore-airlines">Singapore Airlines directly</option><option value="scoot">Scoot directly</option><option value="krisshop">KrisShop</option><option value="krisplus">Kris+ app</option><option value="pelago">Pelago</option>
-                </select><span className="muted small">Choose only when paying through the eligible partner path. A merchant name alone doesn’t confirm 3 mpd.</span>
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={recurring}
+                  onChange={(e) => {
+                    setRecurring(e.target.checked);
+                    setRecorded(false);
+                  }}
+                />
+                Recurring payment / subscription
+              </label>
+              <label className="form-label">
+                Confirmed KrisFlyer UOB partner payment
+                <select
+                  value={partner}
+                  onChange={(e) => {
+                    setPartner(e.target.value as RewardPartner | "");
+                    setRecorded(false);
+                  }}
+                >
+                  <option value="">None / not confirmed</option>
+                  <option value="singapore-airlines">
+                    Singapore Airlines directly
+                  </option>
+                  <option value="scoot">Scoot directly</option>
+                  <option value="krisshop">KrisShop</option>
+                  <option value="krisplus">Kris+ app</option>
+                  <option value="pelago">Pelago</option>
+                </select>
+                <span className="muted small">
+                  Confirm the eligible direct payment path. A merchant lookup
+                  alone does not qualify a partner payment.
+                </span>
               </label>
               <label className="form-label">
                 Specific purchase category
@@ -378,9 +598,10 @@ export function FinderScreen({
                   value={category}
                   onChange={(e) => {
                     setCategory(e.target.value as Category);
-                    setRecorded(false);
-                    setMcc("");
+                    setMerchantId(undefined);
+                    setMccEdited(false);
                     setMccConfirmed(false);
+                    setRecorded(false);
                   }}
                 >
                   {categories.map((c) => (
@@ -391,10 +612,8 @@ export function FinderScreen({
                   <option value="utilities">Utilities</option>
                   <option value="insurance">Insurance</option>
                   <option value="education">Education</option>
-                  <option value="government">Government payments</option>
-                  <option value="financial">
-                    Financial services / top-ups
-                  </option>
+                  <option value="government">Government</option>
+                  <option value="financial">Financial / top-ups</option>
                 </select>
               </label>
               <label className="form-label">
@@ -405,11 +624,12 @@ export function FinderScreen({
                   pattern="[0-9]{4}"
                   value={mcc}
                   onChange={(e) => {
-                    setMcc(e.target.value.replace(/\D/g, ""));
+                    setManualMcc(e.target.value.replace(/\D/g, ""));
+                    setMccEdited(true);
                     setMccConfirmed(false);
                     setRecorded(false);
                   }}
-                  placeholder="If you know it, e.g. 5812"
+                  placeholder="e.g. 5812"
                 />
               </label>
               {mcc && (
@@ -428,7 +648,8 @@ export function FinderScreen({
               <label className="check-label">
                 <input
                   type="checkbox"
-                  checked={excluded}
+                  checked={excluded || !!hints?.excluded}
+                  disabled={!!hints?.excluded}
                   onChange={(e) => {
                     setExcluded(e.target.checked);
                     setRecorded(false);
@@ -437,9 +658,85 @@ export function FinderScreen({
                 Excluded spend, such as a wallet top-up or cash advance
               </label>
               <p className="muted small">
-                Merchant names don’t prove an MCC. Estimates use the category
-                you select; exclusions still apply.
+                {MERCHANTS.length} sourced merchant entries. Outlet and payment
+                route can change the MCC. Your bank&apos;s posted code takes
+                priority.
               </p>
+            </div>
+          </details>
+          <details className="purchase-details merchant-directory">
+            <summary>
+              Merchant & MCC database <ChevronDown size={16} />
+            </summary>
+            <div className="advanced-form">
+              <p className="muted small">
+                Search above across {formatMiles(MERCHANT_REFERENCE_COUNT)}{" "}
+                merchant references, including {MERCHANTS.length} curated
+                entries. Global references are unverified for Singapore. No
+                directory covers every outlet or payment route.
+              </p>
+              <label className="form-label">
+                Find an MCC code
+                <input
+                  type="search"
+                  value={codeSearch}
+                  onChange={(e) => setCodeSearch(e.target.value)}
+                  placeholder="e.g. 5411, airlines, hotels"
+                />
+              </label>
+              {codeSearch.trim() && (
+                <div className="mcc-code-results">
+                  {searchMccCodes(codeSearch, 8).map((code) => (
+                    <button
+                      type="button"
+                      key={code.code}
+                      onClick={() => {
+                        setManualMcc(code.code);
+                        setMccEdited(true);
+                        setMccConfirmed(false);
+                        setRecorded(false);
+                      }}
+                    >
+                      <strong>{code.code}</strong>
+                      <span>{code.description}</span>
+                      <ArrowRight size={14} />
+                    </button>
+                  ))}
+                  {!searchMccCodes(codeSearch, 1).length && (
+                    <p className="muted small">
+                      No code matches. Try a category or four-digit code.
+                    </p>
+                  )}
+                </div>
+              )}
+              <p className="muted small">
+                {MCC_REFERENCE.length} code labels. A code description does not
+                prove a merchant’s MCC.{" "}
+                <a
+                  href={MCC_REFERENCE_SOURCE.manualUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Current Visa manual <ArrowUpRight size={12} />
+                </a>
+              </p>
+              <h3>More merchant directories</h3>
+              <div className="directory-links">
+                {MERCHANT_LOOKUP_SOURCES.map((source) => (
+                  <a
+                    href={source.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    key={source.id}
+                  >
+                    <span>
+                      <strong>{source.name}</strong>
+                      <small>{source.note}</small>
+                    </span>
+                    <ArrowUpRight size={16} />
+                  </a>
+                ))}
+              </div>
             </div>
           </details>
           {amount && Number(amount) > 1000000 && (
@@ -458,45 +755,89 @@ export function FinderScreen({
         aria-live="polite"
         aria-atomic="false"
       >
+        {!recorded && setupCandidates.length > 0 && (
+          <div
+            className="setup-candidates"
+            role="region"
+            aria-label="Higher rewards need setup"
+          >
+            <h2>Higher rewards need setup</h2>
+            <p className="muted small">
+              These could earn more if the conditions below are met.
+            </p>
+            {setupCandidates.slice(0, 2).map((a) => (
+              <div className="setup-candidate" key={a.card.id}>
+                <div className="comparison-heading">
+                  <CardArt
+                    templateId={a.template.id}
+                    className="card-thumbnail"
+                    decorative
+                  />
+                  <div>
+                    <strong>{a.template.name}</strong>
+                    <span>
+                      {a.card.owner} · up to {rate(a.potential!)}
+                    </span>
+                  </div>
+                </div>
+                <details>
+                  <summary>
+                    Conditions to check <ChevronDown size={14} />
+                  </summary>
+                  <ul>
+                    {a.blockers.map((b) => (
+                      <li key={`${b.id}-${b.label}`}>{b.label}</li>
+                    ))}
+                  </ul>
+                </details>
+                <button
+                  className="text-action"
+                  onClick={() => onCardSetup(a.card.id)}
+                >
+                  Check {a.template.name} setup <ArrowRight size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {winner ? (
           <>
-            <m.div
-              key={`${winner.card.id}-${winner.ruleId}`}
-              initial={{ opacity: 0.6, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.14 }}
-            >
-              <RecommendationResult result={winner} recorded={recorded} />
-            </m.div>
+            <RecommendationResult
+              result={winner}
+              recorded={recorded}
+              setupPending={!recorded && setupCandidates.length > 0}
+            />
             {!recorded ? (
               <button
-                className="primary-button record-button"
+                className="primary-button record-button wide"
                 onClick={record}
                 disabled={store.saving}
               >
                 <Check size={17} />
                 {store.saving ? "Saving purchase…" : "Record this purchase"}
-                <ArrowRight size={17} />
               </button>
             ) : (
               <div className="recorded-state">
                 <Check size={18} />
                 <div>
                   <strong>Purchase recorded</strong>
-                  <span>
-                    Your next recommendation uses the updated capacity.
-                  </span>
+                  <span>Capacity updated for your next purchase.</span>
                 </div>
                 <button
                   className="text-action"
                   onClick={() => {
                     setAmount("");
                     setMerchant("");
+                    setMerchantId(undefined);
+                    setManualMcc("");
+                    setMccEdited(false);
+                    setMccConfirmed(false);
+                    setPartner("");
+                    setExcluded(false);
                     setRecorded(false);
                   }}
                 >
-                  Next purchase
-                  <ArrowRight size={14} />
+                  Next purchase <ArrowRight size={14} />
                 </button>
               </div>
             )}
@@ -505,43 +846,6 @@ export function FinderScreen({
                 {formError}
               </p>
             )}
-            {!recorded && results.length > 1 && (
-              <div className="alternatives">
-                <span className="eyebrow">NEXT BEST</span>
-                {results.slice(1, 4).map((r) => (
-                  <details className="alternative-row" key={r.card.id}>
-                    <summary>
-                      <div>
-                        <strong>{r.template.name}</strong>
-                        <span>
-                          {r.card.owner} · {r.confidence}
-                        </span>
-                      </div>
-                      <div>
-                        <strong>
-                          {r.effectiveMpd > 0
-                            ? `${r.effectiveMpd.toFixed(r.effectiveMpd % 1 ? 2 : 0)} mpd`
-                            : `${formatMoney(r.cashbackSgd, 2)} cashback`}
-                        </strong>
-                        <span>{formatMoney(r.netValueSgd, 2)} net value</span>
-                      </div>
-                      <ChevronDown size={14} />
-                    </summary>
-                    <p>{r.reason}</p>
-                    {r.warnings.map((warning) => (
-                      <p className="muted small" key={warning}>
-                        {warning}
-                      </p>
-                    ))}
-                  </details>
-                ))}
-              </div>
-            )}
-            <p className="estimate-note">
-              <Info size={14} />
-              Estimates follow issuer rules and your tracked usage. The bank’s
-              posted rewards are final.
-            </p>
           </>
         ) : (
           <div className="finder-empty">
@@ -600,28 +904,122 @@ export function FinderScreen({
             </div>
           </div>
         )}
+        {!recorded && assessments.length > 0 && (
+          <details className="card-comparison alternatives">
+            <summary>
+              All cards compared <span>{assessments.length}</span>
+              <ChevronDown size={16} />
+            </summary>
+            <div>
+              {assessments.map((a) => (
+                <AssessmentRow
+                  key={a.card.id}
+                  assessment={a}
+                  onSetup={() => onCardSetup(a.card.id)}
+                />
+              ))}
+            </div>
+          </details>
+        )}
+        {winner && (
+          <p className="estimate-note">
+            Estimates use issuer rules and tracked usage. Posted bank rewards
+            are final.
+          </p>
+        )}
       </section>
     </div>
   );
 }
+
+function AssessmentRow({
+  assessment: a,
+  onSetup,
+}: {
+  assessment: CardAssessment;
+  onSetup: () => void;
+}) {
+  const labels = {
+    ready: "Eligible",
+    "setup-needed": "Setup needed",
+    ineligible: "Doesn’t qualify",
+    "manual-review": "Manual review",
+    inactive:
+      a.card.status === "unconfirmed" ? "Ownership unconfirmed" : "Inactive",
+  };
+  return (
+    <details className="comparison-row">
+      <summary>
+        <CardArt
+          templateId={a.template.id}
+          className="card-thumbnail"
+          decorative
+        />
+        <div className="comparison-copy">
+          <strong>{a.template.name}</strong>
+          <span>
+            {a.card.owner} · {labels[a.status]}
+          </span>
+        </div>
+        <span className="comparison-rate">
+          {a.recommendation ? rate(a.recommendation) : "—"}
+        </span>
+        <ChevronDown size={14} />
+      </summary>
+      <div className="comparison-detail">
+        <p>{a.explanation}</p>
+        {a.recommendation && (
+          <p>
+            {a.recommendation.reason} ·{" "}
+            {formatMoney(a.recommendation.netValueSgd, 2)} after tracked costs
+          </p>
+        )}
+        {a.blockers.length > 0 && (
+          <ul>
+            {a.blockers.map((b) => (
+              <li key={`${b.id}-${b.label}`}>{b.label}</li>
+            ))}
+          </ul>
+        )}
+        {a.status === "setup-needed" || a.card.status === "unconfirmed" ? (
+          <button className="text-action" onClick={onSetup}>
+            Check {a.template.name} setup <ArrowRight size={14} />
+          </button>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function RecommendationResult({
   result: r,
   recorded,
+  setupPending,
 }: {
   result: Recommendation;
   recorded: boolean;
+  setupPending: boolean;
 }) {
   return (
     <div className="recommendation">
       <div className="recommendation-top">
         <span className="eyebrow">
-          {recorded ? "PURCHASE RECORDED" : "BEST NEXT MOVE"}
+          {recorded
+            ? "PURCHASE RECORDED"
+            : setupPending
+              ? "AVAILABLE WITH CURRENT SETUP"
+              : "BEST NEXT MOVE"}
         </span>
         <span className="confidence">
           <span />
           {r.confidence}
         </span>
       </div>
+      <CardArt
+        templateId={r.template.id}
+        className="winner-card-art"
+        priority
+      />
       <p className="winner-owner">
         {recorded ? "Recorded with" : "Use"} {r.card.owner}’s
       </p>
@@ -639,12 +1037,18 @@ function RecommendationResult({
             : "Estimated cash reward"}
         </span>
       </div>
-      <p className="winner-reason">{r.reason}</p>
+      <p className="winner-reason">{r.eligibilitySummary ?? r.reason}</p>
+      {r.capacityRemainingSgd !== null && (
+        <div className="winner-cap">
+          <span>Bonus capacity before purchase</span>
+          <strong>{formatMoney(r.capacityRemainingSgd)} left</strong>
+        </div>
+      )}
       {r.confidence !== "Confirmed" && (
         <p className="winner-uncertainty">
           {r.confidence === "Likely"
-            ? "Merchant MCC isn’t confirmed. Bonus eligibility is an estimate."
-            : "Confirm the card’s usage and eligibility before relying on bonus rewards."}
+            ? "MCC and bonus eligibility are estimates."
+            : "Some usage or eligibility details still need confirmation."}
         </p>
       )}
       {r.template.id === "hsbc-revolution" && (
@@ -652,26 +1056,23 @@ function RecommendationResult({
           Asia Miles equivalent. KrisFlyer conversion earns fewer miles.
         </p>
       )}
-      {r.capacityRemainingSgd !== null && (
-        <div className="winner-cap">
-          <span>Bonus capacity before purchase</span>
-          <strong>{formatMoney(r.capacityRemainingSgd)} left</strong>
-        </div>
-      )}
       {r.welcomeIncrementalMiles > 0 && (
-        <div className="welcome-increment">
-          <Check size={15} />
-          This planned purchase makes {formatMiles(
-            r.welcomeIncrementalMiles,
-          )}{" "}
-          extra welcome miles attainable, subject to the offer’s terms.
-        </div>
+        <p className="welcome-increment">
+          This planned purchase makes {formatMiles(r.welcomeIncrementalMiles)}{" "}
+          extra welcome miles attainable, subject to the offer terms.
+        </p>
       )}
       <details className="calculation-details">
         <summary>
-          Why this card?
-          <ChevronDown size={15} />
+          Why this card? <ChevronDown size={15} />
         </summary>
+        <p>{r.reason}</p>
+        {r.capacityRemainingSgd !== null && (
+          <p>
+            {formatMoney(r.capacityRemainingSgd)} bonus capacity before this
+            purchase.
+          </p>
+        )}
         <dl>
           <div>
             <dt>Estimated reward value</dt>
@@ -695,14 +1096,13 @@ function RecommendationResult({
         {r.warnings.map((w) => (
           <p key={w}>{w}</p>
         ))}
-        <p>
+        <p className="small muted">
           Rule {r.snapshot.ruleVersion} · checked{" "}
           {r.snapshot.lastVerifiedAt || "not verified"}
         </p>
         {r.snapshot.sourceUrl && (
           <a href={r.snapshot.sourceUrl} target="_blank" rel="noreferrer">
-            Issuer source
-            <ArrowUpRight size={13} />
+            Issuer source <ArrowUpRight size={13} />
           </a>
         )}
       </details>

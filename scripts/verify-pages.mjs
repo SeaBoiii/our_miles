@@ -14,7 +14,7 @@ import AxeBuilder from "@axe-core/playwright";
 const basePath = "/our_miles";
 const exportRoot = await realpath(path.resolve("out"));
 const artifacts = path.resolve("artifacts/pages");
-const mimeTypes = { ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8", ".map": "application/json; charset=utf-8" };
+const mimeTypes = { ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp", ".ico": "image/x-icon", ".woff": "font/woff", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8", ".map": "application/json; charset=utf-8" };
 const staticRequests = [];
 
 function insideRoot(target) {
@@ -241,15 +241,15 @@ async function verifyNurulCards(page, backend, report) {
   };
   const purchase = async ({ amount = "100", mcc = "5732", category = "shopping", channel = "online", recurring = false, method = "card", partner = "" } = {}) => {
     await page.getByLabel("Purchase amount in Singapore dollars", { exact: true }).fill(amount);
-    await page.getByRole("textbox", { name: /^Merchant optional/ }).fill("Nurul QA intended purchase");
+    await page.locator("#merchant").fill("Nurul QA intended purchase");
     await page.locator(".channel-field").getByRole("button", { name: channel === "online" ? "Online" : "Contactless", exact: true }).click();
     await details();
-    await page.getByLabel(/^Specific purchase category/).selectOption(category);
-    await page.getByLabel("Merchant category code (MCC)", { exact: true }).fill(mcc);
-    await page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true }).check();
+    await page.getByLabel(/^(?:Specific purchase category|Category)/).selectOption(category);
     await page.getByLabel(/^Payment method/).selectOption(method);
     await page.getByLabel("Recurring payment / subscription", { exact: true }).setChecked(recurring);
     await page.getByLabel(/^Confirmed KrisFlyer UOB partner payment/).selectOption(partner);
+    await page.getByLabel("Merchant category code (MCC)", { exact: true }).fill(mcc);
+    await page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true }).check();
     if (await page.getByRole("button", { name: "See our best card", exact: true }).isVisible()) await page.getByRole("button", { name: "See our best card", exact: true }).click();
     return page.getByRole("region", { name: "Card recommendation" });
   };
@@ -294,6 +294,7 @@ async function verifyNurulCards(page, backend, report) {
   await navigation.getByRole("button", { name: "What Card?", exact: true }).click();
   await expect(await purchase({ amount: "5.10" })).toContainText("20 miles");
   await page.getByRole("button", { name: "Record this purchase", exact: true }).click();
+  await expect.poll(() => backend.state.transactions.length).toBe(1);
   assert.equal(backend.state.transactions.at(-1).reward.miles, 20);
   assert.equal(backend.state.transactions.at(-1).reward.bonusRoundingGroup, "dbs-wwmc-online-local");
   report.checks.dbsSplit = "local/foreign opening accumulators save separately, share gross cap, and preserve marginal monthly rounding group";
@@ -318,28 +319,18 @@ async function verifyNurulCards(page, backend, report) {
   await expect(await purchase()).toContainText("328 miles");
   await expect(await purchase({ recurring: true })).toContainText("40 miles");
   await page.getByRole("button", { name: "Record this purchase", exact: true }).click();
+  await expect.poll(() => backend.state.transactions.length).toBe(1);
   assert.equal(backend.state.transactions.at(-1).recurring, true);
   assert.equal(backend.state.transactions.at(-1).reward.miles, 40);
+  const activityFixture = structuredClone(backend.state.transactions.at(-1));
   await navigation.getByRole("button", { name: "What Card?", exact: true }).click();
   await expect(await purchase({ channel: "contactless", method: "apple-pay" })).toContainText("400 miles");
   report.checks.ppvBucketsRecurring = "independent saved caps affect blended online earn; recurring excludes online bonus and survives recording; mobile tap uses its separate capacity";
 
-  backend.state = { ...backend.state, cards: backend.state.cards.map((card) => ({ ...card, status: "active" })), transactions: [] };
+  backend.state = { ...backend.state, cards: backend.state.cards.map((card) => ({ ...card, status: "active" })), transactions: [{ ...activityFixture, merchant: "Spotify", status: "posted", postedDate: singaporeDate }] };
   backend.version++;
   await page.reload();
   await expect(page.locator(".app-shell")).toBeVisible();
-  for (const label of [null,"Preferred Visa","Lady","Woman","KrisFlyer UOB"]) {
-    const audit = await accessibilityAudit(page,backend,async auditor=>{
-      await auditor.locator("nav:visible").getByRole("button",{name:"Wallet",exact:true}).click();
-      if (label) {
-        await auditor.locator(".wallet-row").filter({hasText:label}).click();
-        await expect(auditor.getByRole("dialog")).toBeVisible();
-        if (label==="KrisFlyer UOB") await auditor.getByRole("dialog").locator("summary").filter({hasText:"Annual airline qualification"}).click();
-      }
-    });
-    assert.equal(audit.violations.length,0,`${label??"Wallet"} accessibility violations: ${audit.violations.map(violation=>violation.id).join(", ")}`);
-  }
-  report.checks.nurulAccessibility = "wallet and PPV/Lady’s/DBS/KrisFlyer setup sheets have zero WCAG A/AA axe violations in separate auditor contexts";
   // Fresh contexts avoid a mobile layout viewport retaining desktop zoom/scroll
   // after resizing an already focused, open dialog.
   for (const [width,height] of [[360,800],[390,844],[412,915],[430,932],[1440,1000]]) {
@@ -361,6 +352,37 @@ async function verifyNurulCards(page, backend, report) {
         await visual.screenshot({path:path.join(artifacts,file),fullPage:false});
         report.screenshots.push(`artifacts/pages/${file}`);
       };
+      for (const view of ["home", "what-card", "activity", "goals", "bonuses"]) {
+        await visual.goto(`${appUrl}#${view}`);
+        await expect(visual.locator(".app-shell")).toBeVisible();
+        if (view === "what-card") {
+          await visual.getByLabel("Purchase amount in Singapore dollars", { exact: true }).fill("100");
+          await visual.locator("#merchant").fill("FairPrice");
+          if (width === 360 || width === 390) {
+            await expect(visual.locator("#merchant-suggestions")).toBeVisible();
+            await expect.poll(async () => {
+              const suggestions = await visual.locator("#merchant-suggestions").boundingBox();
+              const navigation = await visual.locator(".bottom-nav").boundingBox();
+              return !!suggestions && !!navigation && suggestions.y >= 0 && suggestions.y + suggestions.height <= navigation.y + 1;
+            }, {message:`Merchant suggestions must fit above fixed navigation at ${width}px`}).toBe(true);
+            await capture("merchant-search");
+          }
+          await visual.getByRole("option", { name: /^FairPrice Likely MCC 5411$/ }).click();
+          await visual.locator(".channel-field").getByRole("button", { name: "Contactless", exact: true }).click();
+          const visualDetails = visual.locator("summary").filter({hasText:"Currency, wallet & merchant details"});
+          if (!await visualDetails.evaluate(node => node.parentElement.open)) await visualDetails.click();
+          await visual.getByLabel(/^Payment method/).selectOption("apple-pay");
+        }
+        await visual.evaluate(()=>window.scrollTo(0,0));
+        await capture(view);
+        if (view === "what-card") {
+          await visual.locator("#recommendation-result").evaluate(node => node.scrollIntoView({block:"start",behavior:"instant"}));
+          await capture("recommendation");
+        }
+      }
+      await visual.goto(`${appUrl}#wallet`);
+      await expect(visual.locator(".wallet-row")).toHaveCount(5);
+      await expect.poll(() => visual.locator(".card-art img").evaluateAll(images => images.every(img => img.complete && img.naturalWidth > 0))).toBe(true);
       await visual.evaluate(()=>window.scrollTo(0,0));
       await capture("wallet");
       await visual.locator(".wallet-row").nth(2).scrollIntoViewIfNeeded();
@@ -384,7 +406,24 @@ async function verifyNurulCards(page, backend, report) {
       }
     } finally { await visualContext.close(); }
   }
-  report.checks.nurulResponsive = "fresh-context five-card wallet and four sheets at 360/390/412/430/1440; exact viewport width, no horizontal overflow, source links rendered";
+  report.checks.nurulResponsive = "fresh-context restored Field Notes screens, merchant-led mobile payment recommendation, five-card wallet and four sheets at 360/390/412/430/1440; narrow merchant dropdowns, exact viewport width, no horizontal overflow, issuer art loaded, source links rendered";
+  for (const label of [null,"Preferred Visa","Lady","Woman","KrisFlyer UOB"]) {
+    const audit = await accessibilityAudit(page,backend,async auditor=>{
+      await auditor.locator("nav:visible").getByRole("button",{name:"Wallet",exact:true}).click();
+      if (label) {
+        await auditor.locator(".wallet-row").filter({hasText:label}).click();
+        await expect(auditor.getByRole("dialog")).toBeVisible();
+        if (label==="KrisFlyer UOB") await auditor.getByRole("dialog").locator("summary").filter({hasText:"Annual airline qualification"}).click();
+      }
+    });
+    assert.equal(audit.violations.length,0,`${label??"Wallet"} accessibility violations: ${audit.violations.map(violation=>violation.id).join(", ")}`);
+  }
+  for (const view of ["home", "activity", "goals", "bonuses"]) {
+    const audit = await accessibilityAudit(page, backend, async auditor => { await auditor.goto(`${appUrl}#${view}`); await expect(auditor.locator(".app-shell")).toBeVisible(); });
+    assert.equal(audit.violations.length, 0, `${view} accessibility violations: ${audit.violations.map(violation => violation.id).join(", ")}`);
+  }
+  report.checks.restoredSupportingAccessibility = "Home, Activity, Goals and Bonuses have zero WCAG A/AA axe violations";
+  report.checks.nurulAccessibility = "wallet and PPV/Lady’s/DBS/KrisFlyer setup sheets have zero WCAG A/AA axe violations in separate auditor contexts";
 }
 
 const report = { authentication: "mocked Supabase Auth/REST only; live project not accessed", checks: {}, screenshots: [] };
@@ -399,12 +438,13 @@ try {
     fixtureConfigPresent ||= text.includes("example.supabase.co");
   }
   assert(fixtureConfigPresent, "Build out using the fake public QA Supabase URL before running this mocked test.");
-  const assets = files.filter((file) => /\.(?:js|css|woff2?|png|svg|webmanifest|ico)$/.test(file));
+  const assets = files.filter((file) => /\.(?:js|css|woff2?|png|webp|svg|webmanifest|ico)$/.test(file));
   for (const file of assets) {
     const response = await fetch(`${appUrl}${file.split("/").map(encodeURIComponent).join("/")}`);
     assert.equal(response.status, 200, `Static asset failed under the project subpath: ${file}`);
   }
-  assert(assets.some((asset) => asset.endsWith(".woff2")), "Self-hosted font files are missing.");
+  assert(assets.some((asset) => asset.endsWith(".woff2")), "The restored self-hosted display font is missing.");
+  assert(assets.filter((asset) => asset.startsWith("cards/") && asset.endsWith(".webp")).length >= 11, "Locally hosted issuer card artwork is missing.");
   const manifestResponse = await fetch(`${appUrl}manifest.webmanifest`);
   assert.equal(manifestResponse.status, 200);
   const manifest = await manifestResponse.json();
@@ -530,11 +570,11 @@ try {
   await expect(page.getByRole("button", { name: "Nurul's Citi Rewards, S$1,000 bonus capacity left", exact: true })).toBeVisible();
   await navigation.getByRole("button", { name: "What Card?", exact: true }).click();
   await page.getByLabel("Purchase amount in Singapore dollars", { exact: true }).fill("512");
-  await page.getByRole("textbox", { name: /^Merchant optional/ }).fill("Insta360 QA purchase");
+  await page.locator("#merchant").fill("Insta360 QA purchase");
   await page.getByRole("button", { name: "See our best card", exact: true }).click();
   await expect(page.getByRole("region", { name: "Card recommendation" })).toContainText("2,048 miles");
   await page.getByRole("button", { name: "Record this purchase", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Card recommendation" })).toContainText("Recorded with Nurul");
+  await expect(page.getByRole("region", { name: "Card recommendation" })).toContainText(/(?:Recorded|Saved) with Nurul/);
   assert.equal(backend.state.transactions.length, 1);
   const recorded = structuredClone(backend.state.transactions[0]);
   assert.equal(recorded.status, "pending", "A newly entered purchase must remain pending until posting is confirmed.");

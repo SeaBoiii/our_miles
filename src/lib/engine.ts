@@ -1,5 +1,7 @@
 import type {
   CardCapacity,
+  CardAssessment,
+  AssessmentBlocker,
   AnnualQualificationProgress,
   CardRule,
   CardTemplate,
@@ -260,7 +262,12 @@ function ruleUsage(
   const qualifying = minPeriod
     ? opening(card, minPeriod, true) +
       periodTransactions(card, transactions, minPeriod, rule, true)
-        .filter((transaction) => transaction.status !== "pending")
+        .filter((transaction) => {
+          if (transaction.status === "pending") return false;
+          const historical = template?.rules.find(candidate => candidate.id === transaction.reward.ruleId && candidate.version === transaction.reward.ruleVersion) ?? rule;
+          const eligibility = matchConditions(transaction, historical.conditions);
+          return eligibility.eligible && eligibility.confidence !== "Unverified";
+        })
         .reduce(
           (total, transaction) => total + transaction.reward.qualifyingSpendSgd,
           0,
@@ -376,6 +383,8 @@ function offerSpend(offer: WelcomeOffer, transactions: Transaction[]): number {
             transaction.cardId === offer.cardId &&
             transaction.status !== "reversed" &&
             transaction.status !== "pending" &&
+            matchConditions(transaction, offer.conditions ?? {}).eligible &&
+            matchConditions(transaction, offer.conditions ?? {}).confidence !== "Unverified" &&
             singaporeDate(transaction.postedDate ?? transaction.date) >=
               offer.startsOn &&
             singaporeDate(transaction.postedDate ?? transaction.date) <=
@@ -451,7 +460,8 @@ function welcomeValue(
       candidate.deadline >= day &&
       candidate.verified &&
       candidate.eligibilityConfirmed &&
-      matchConditions(purchase, candidate.conditions ?? {}).eligible,
+      matchConditions(purchase, candidate.conditions ?? {}).eligible &&
+      matchConditions(purchase, candidate.conditions ?? {}).confidence !== "Unverified",
   );
   if (!offer || !qualifying)
     return { offer: undefined, contribution: 0, miles: 0 };
@@ -482,7 +492,8 @@ function calculate(
     matchConditions(purchase, chosen.conditions).confidence,
   );
   const usage = ruleUsage(card, context.transactions, chosen, purchase.date, template);
-  const qualifies = matchConditions(purchase, chosen.conditions).eligible;
+  const purchaseEligibility = matchConditions(purchase, chosen.conditions);
+  const qualifies = purchaseEligibility.eligible && purchaseEligibility.confidence !== "Unverified";
   const baseMpd =
     base?.milesPerDollar ?? (chosen.cap || chosen.annualQualification ? 0 : chosen.milesPerDollar);
   const baseCashback =
@@ -541,7 +552,7 @@ function calculate(
   }
   if (chosen.minimumSpend) {
     const minimum = chosen.minimumSpend.amountSgd;
-    const after = usage.qualifying + purchase.amountSgd;
+    const after = usage.qualifying + (qualifies ? purchase.amountSgd : 0);
     const planned = positive(context.naturalSpendByCard?.[card.id]);
     if (after < minimum) {
       if (after + planned < minimum) {
@@ -558,6 +569,7 @@ function calculate(
     }
     if (
       card.usageKnown &&
+      qualifies &&
       usage.period &&
       usage.qualifying + planned < minimum &&
       after + planned >= minimum &&
@@ -572,6 +584,8 @@ function calculate(
           .filter(
             (transaction) =>
               transaction.status !== "pending" &&
+              transaction.reward.qualifyingSpendSgd > 0 &&
+              matchConditions(transaction, template.rules.find(rule => rule.id === transaction.reward.ruleId && rule.version === transaction.reward.ruleVersion)?.conditions ?? chosen.conditions).confidence !== "Unverified" &&
               transaction.reward.bonusCapGroup === chosen.cap?.group,
           )
           .reduce((sum, transaction) => {
@@ -600,9 +614,8 @@ function calculate(
     }
   }
   if (
-    confidence === "Unverified" &&
     purchase.mcc !== undefined &&
-    purchase.mccConfidence !== "Confirmed" &&
+    purchase.mccConfidence !== "Confirmed" && purchase.mccConfidence !== "Likely" &&
     (chosen.cap || chosen.annualQualification)
   ) {
     bonusSpend = 0;
@@ -686,6 +699,27 @@ function calculate(
     reason = `S$${money(bonusSpend)} earns the bonus rate; the rest earns base rewards. ${effectiveMpd.toFixed(2)} mpd across this purchase.`;
   if (welcome.miles > 0)
     reason = `This intended purchase makes the next welcome tier achievable with your planned spending: ${welcome.miles.toLocaleString("en-SG")} extra miles.`;
+  let eligibilitySummary = chosen.label;
+  if (chosen.cap && usage.remaining === null)
+    eligibilitySummary = "Bonus conditions need confirmation; base rewards only.";
+  else if (chosen.cap && usage.remaining === 0)
+    eligibilitySummary = "Bonus cap reached; this purchase earns base rewards.";
+  else if (chosen.minimumSpend && usage.qualifying + (qualifies ? purchase.amountSgd : 0) + positive(context.naturalSpendByCard?.[card.id]) < chosen.minimumSpend.amountSgd)
+    eligibilitySummary = "Minimum spend is not met; base rewards only.";
+  else if (purchaseEligibility.confidence === "Unverified" && (chosen.cap || chosen.annualQualification))
+    eligibilitySummary = "Merchant eligibility needs confirmation; bonus is withheld.";
+  else if (aggregatePrior?.known === false || componentPrior?.known === false)
+    eligibilitySummary = "Monthly reward spend needs confirmation; base rewards only.";
+  else if (chosen.annualQualification && bonusSpend === 0)
+    eligibilitySummary = "Base miles until the annual airline-group condition is confirmed.";
+  else if (chosen.cap?.lifetimeCashbackSgd && card.openingLifetimeCashbackSgd === undefined)
+    eligibilitySummary = "Promotion balance needs confirmation; cashback is withheld.";
+  else if (chosen.cap && bonusSpend > 0 && bonusSpend < earnedSpend)
+    eligibilitySummary = "Part of this purchase earns base rewards.";
+  if (minimumSpendIncrementalMiles > 0)
+    eligibilitySummary = "Meeting the minimum also unlocks earlier bonus miles.";
+  if (welcome.miles > 0)
+    eligibilitySummary = "This purchase can unlock the next welcome tier.";
   const uniqueWarnings = [...new Set(warnings)];
   return {
     card,
@@ -705,6 +739,7 @@ function calculate(
     ),
     confidence,
     reason,
+    eligibilitySummary,
     warnings: uniqueWarnings,
     capacityRemainingSgd: usage.remaining,
     welcomeIncrementalMiles: welcome.miles,
@@ -826,4 +861,132 @@ export function recommend(
       return capacityDifference;
     return a.card.id.localeCompare(b.card.id);
   });
+}
+
+/**
+ * Explain what each card can earn now and which setup gaps hide a better option.
+ * Conditional estimates never enter recommend(), personal state or recorded rewards.
+ */
+export function assessCards(purchase: Purchase, context: RecommendationContext): CardAssessment[] {
+  const current = recommend(purchase, context);
+  if (!Number.isFinite(purchase.amountSgd) || purchase.amountSgd <= 0 || purchase.amountSgd > 10_000_000 || !Number.isFinite(context.mileValueSgd) || context.mileValueSgd < 0) return [];
+  try { singaporeDate(purchase.date); } catch { return []; }
+  const templates = context.templates ?? CARD_TEMPLATES;
+  const assessments: CardAssessment[] = [];
+  for (const card of context.cards) {
+    const template = getTemplate(card.templateId, templates);
+    if (!template) continue;
+    const recommendation = current.find(result => result.card.id === card.id);
+    if (card.status !== "active") {
+      assessments.push({card, template, status:"inactive", blockers:[], explanation: card.status === "unconfirmed" ? "Confirm that you own this card and activate it to compare." : "This card is inactive."});
+      continue;
+    }
+    if (template.manualReview) {
+      assessments.push({card, template, status:"manual-review", blockers:[], explanation:template.manualReview});
+      continue;
+    }
+    const rules = activeRules(template, purchase.date);
+    const blockers: AssessmentBlocker[] = [];
+    const add = (id: AssessmentBlocker["id"], label: string) => {
+      if (!blockers.some(blocker => blocker.id === id && blocker.label === label)) blockers.push({id, cardId:card.id, label});
+    };
+    let potential: Recommendation | undefined;
+    const multipleGroups = capGroups(template, purchase.date) > 1;
+    let setupNeeded = false;
+    if (purchase.mcc !== undefined && purchase.mccConfidence !== "Confirmed" && purchase.mccConfidence !== "Likely") {
+      add("mcc", "Confirm this merchant's posted MCC or choose a sourced Singapore merchant estimate.");
+      setupNeeded = true;
+    }
+    for (const chosen of rules) {
+      const eligibility = matchConditions(purchase, chosen.conditions);
+      if (chosen.verification === "Unverified" || (!chosen.cap && !chosen.annualQualification && !chosen.selectedCategory) || !eligibility.eligible || (purchase.currency.toUpperCase() !== "SGD" && chosen.fxFeeRate === null)) continue;
+      const unknownCategory = !!chosen.selectedCategory && (!card.selectedRewardCategory || card.selectedRewardCategoryPeriodStart !== getCalendarQuarter(purchase.date).start);
+      if (chosen.selectedCategory && !unknownCategory && !selectedCategoryMatches(card, chosen, purchase.date)) continue;
+      const usage = ruleUsage(card, context.transactions, chosen, purchase.date, template);
+      const assumed = {...card, openingCapSpendSgd:{...card.openingCapSpendSgd}, capUsageKnown:{...card.capUsageKnown}, openingRewardSpendSgd:{...card.openingRewardSpendSgd}};
+      const assumptions: string[] = [];
+      let canCompare = true;
+      if (unknownCategory && chosen.selectedCategory) {
+        add("category", "Confirm the matching category already registered with UOB for this quarter.");
+        setupNeeded = true;
+        // A conditional scenario, not a claim that changing the app enrolls with UOB.
+        assumed.selectedRewardCategory = chosen.selectedCategory;
+        assumed.selectedRewardCategoryPeriodStart = getCalendarQuarter(purchase.date).start;
+        assumptions.push(`UOB has already registered the ${chosen.selectedCategory.replaceAll("-", " ")} category`);
+      }
+      if (chosen.cap && usage.remaining === null) {
+        setupNeeded = true;
+        if (!usage.period) {
+          add("statement", "Confirm the first day of the statement cycle.");
+          // Never invent a statement day to manufacture a reward estimate.
+          canCompare = false;
+        } else {
+          add("usage", `Confirm remaining ${chosen.cap.label ?? "bonus"} capacity for this period.`);
+          assumed.openingPeriodStart = usage.period.start;
+          assumed.usageKnown = true;
+          assumed.capUsageKnown[chosen.cap.group] = true;
+          assumed.openingCapSpendSgd[chosen.cap.group] = 0;
+          if (!multipleGroups) assumed.openingSpendSgd = 0;
+          assumptions.push(`no opening ${chosen.cap.label ?? "bonus"} spend; recorded usage still counts`);
+        }
+      }
+      const componentGroup = chosen.bonusRounding?.scope === "period" ? chosen.bonusRounding.group : chosen.rounding?.scope === "period" ? chosen.rounding.group : undefined;
+      if (componentGroup && usage.period) {
+        const prior = rewardGroupPrior(card, context.transactions, chosen, usage.period, template, componentGroup, !!chosen.bonusRounding);
+        if (!prior.known) {
+          add("reward-component", "Confirm opening spend for this monthly reward component.");
+          setupNeeded = true;
+          assumed.openingRewardSpendSgd[componentGroup] = 0;
+          assumptions.push("zero opening spend for the monthly reward component");
+        }
+      }
+      const qualifyingAmount = eligibility.confidence !== "Unverified" ? purchase.amountSgd : 0;
+      if (chosen.minimumSpend && usage.qualifying + qualifyingAmount + positive(context.naturalSpendByCard?.[card.id]) < chosen.minimumSpend.amountSgd) {
+        const minimum = chosen.minimumSpend.amountSgd;
+        if (!capKnown(card, chosen, multipleGroups)) {
+          add("minimum", `Confirm at least S$${minimum} qualifying spend this period; do not spend extra just for rewards.`);
+          assumed.openingQualifyingSpendSgd = minimum;
+          assumptions.push(`the S$${minimum} qualifying minimum is already met`);
+          setupNeeded = true;
+        } else {
+          add("minimum", `S$${money(minimum - usage.qualifying - qualifyingAmount)} still needed after this purchase; bonus is withheld.`);
+          // A known unmet minimum is not missing setup and never an invitation to chase it.
+          canCompare = false;
+        }
+      }
+      if (chosen.annualQualification) {
+        const annual = getAnnualQualificationProgress(card, context.transactions, purchase.date, templates);
+        if (!annual?.qualified) {
+          add("annual", annual?.known ? `Annual airline-group condition is not met; S$${money(annual.remainingSgd)} remains.` : "Confirm the membership year and posted airline-group qualifying spend.");
+          setupNeeded ||= !annual?.known;
+          // Never invent annual spend or make a purchase appear to satisfy it early.
+          canCompare = false;
+        }
+      }
+      if (chosen.cap?.lifetimeCashbackSgd && card.openingLifetimeCashbackSgd === undefined) {
+        add("lifetime", "Confirm cashback already earned during this promotion.");
+        setupNeeded = true;
+        canCompare = false;
+      }
+      if (purchase.mcc !== undefined && purchase.mccConfidence !== "Confirmed" && purchase.mccConfidence !== "Likely") {
+        canCompare = false;
+      }
+      if (canCompare && assumptions.length) {
+        const result = recommend(purchase, {...context, cards:[assumed]})[0];
+        if (result && (!potential || result.netValueSgd > potential.netValueSgd)) {
+          const reason = `Conditional estimate only: assumes ${assumptions.join("; ")}. Confirm with the bank before relying on this bonus.`;
+          const warnings = [...result.warnings, "This setup scenario is not a confirmed recommendation and must not be recorded."];
+          potential = {...result, confidence:"Unverified", reason, warnings, snapshot:{...result.snapshot,confidence:"Unverified",reason,warnings}};
+        }
+      }
+    }
+    if (rules.some(rule => rule.conditions.rewardPartners) && purchase.category === "travel" && !purchase.rewardPartner) {
+      add("partner", "Confirm the booking partner and eligible payment route to check partner rewards.");
+      setupNeeded = true;
+    }
+    if (potential && recommendation && potential.netValueSgd <= recommendation.netValueSgd) potential = undefined;
+    const status = !recommendation ? "ineligible" : setupNeeded ? "setup-needed" : "ready";
+    assessments.push({card, template, recommendation, potential, status, blockers, explanation: !recommendation ? setupNeeded ? "The merchant classification or card setup needs confirmation; no matching estimate is available yet." : "No verified reward rule matches this purchase, payment route and currency." : setupNeeded ? "Bonus eligibility needs confirmation. The current estimate includes only rewards supported by the entered setup." : blockers.length ? blockers.map(blocker => blocker.label).join(" ") : recommendation.reason});
+  }
+  return assessments;
 }

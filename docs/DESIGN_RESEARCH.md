@@ -1,6 +1,8 @@
 # Our Miles — design decisions
 
-Reviewed 5 October 2026. This document records findings that affect the product, not a gallery of references. [The three comparable previews](design-directions.html) use explicitly illustrative financial data; they are design evidence, not bank rules.
+Reviewed 7 October 2026. Aleem explicitly reselected the original Field Notes design after trying a compact Apple-inspired visual direction. The ivory canvas, Instrument Serif hierarchy, forest-green actions and editorial composition are the current design. Merchant lookup, recommendation improvements and authentic card artwork remain in place.
+
+This document records findings that affect the product, not a gallery of references. [The three comparable previews](design-directions.html) use explicitly illustrative financial data; they are design evidence, not bank rules. Their original exploration was reviewed on 5 October 2026.
 
 ## The family resemblance
 
@@ -60,3 +62,10 @@ Rendered evidence: Chromium Playwright captured all three 390 × 844 phone previ
 - Category and amount are the common path. MCC, foreign currency details, payment method and exclusions appear when needed, with merchant uncertainty remaining visible in the result.
 - A single pale attention band gives a relevant deadline and remaining spend. Natural spending constraints remain explicit. Expired offers and unrealistic tiers must not use action urgency.
 - Locally hosted type, a small vector route mark and CSS progress lines supply identity without slowing the payment decision. No generated media is necessary for this direction.
+
+## Retained additions
+
+- **Recognisable card artwork.** [Apple's Wallet card guide](https://support.apple.com/guide/iphone/set-up-cards-and-passes-iph9b7f53382/ios) illustrates the value of recognisable card items opening specific details. Authentic issuer artwork accompanies the recommendation and wallet rows within Field Notes. Keep the card name and owner in text. Assets are hosted locally; their provenance is documented in [CARD_ARTWORK.md](CARD_ARTWORK.md).
+- **Sourced merchant lookup.** Suggestions expose MCC evidence, payment-route caveats and confidence. Wider reference matches remain Unverified until confirmed. A code description does not establish the merchant's MCC. The merchant database and external sources are documented in [MERCHANTS.md](MERCHANTS.md).
+- **Explain setup before comparing.** Unknown cap usage, an unselected bank bonus category or an unmet qualifying-spend condition must remain visible. A conditional comparison can show why a specialist card may outperform the available winner and link directly to setup. It cannot become a recorded reward.
+- **Preserve the purchase context.** Saving a card's setup returns to the same purchase. Long detail sheets retain a visible title and close control while their contents scroll. These interaction improvements continue within the restored visual design.

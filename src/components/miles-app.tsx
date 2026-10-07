@@ -29,12 +29,7 @@ import type { Category, Owner } from "@/lib/domain";
 
 export type Store = ReturnType<typeof useMilesStore>;
 export type View =
-  | "home"
-  | "what-card"
-  | "wallet"
-  | "activity"
-  | "goals"
-  | "bonuses";
+  "home" | "what-card" | "wallet" | "activity" | "goals" | "bonuses";
 const tabs = [
   { id: "home", label: "Home", icon: Home },
   { id: "what-card", label: "What Card?", icon: ScanLine },
@@ -46,6 +41,7 @@ export function MilesApp() {
   const [view, setView] = useState<View>("home");
   const [profileOpen, setProfileOpen] = useState(false);
   const [quickCategory, setQuickCategory] = useState<Category>("online");
+  const [requestedCardId, setRequestedCardId] = useState<string>();
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [toast, setToast] = useState("");
   const go = (next: View, category?: Category) => {
@@ -243,9 +239,20 @@ export function MilesApp() {
                   key={quickCategory}
                   {...screenProps}
                   quickCategory={quickCategory}
+                  onCardSetup={(cardId) => {
+                    setRequestedCardId(cardId);
+                    go("wallet");
+                  }}
                 />
               </div>
-              {view === "wallet" && <WalletScreen {...screenProps} />}
+              {view === "wallet" && (
+                <WalletScreen
+                  {...screenProps}
+                  requestedCardId={requestedCardId}
+                  onRequestHandled={() => setRequestedCardId(undefined)}
+                  onSetupSaved={() => go("what-card")}
+                />
+              )}
               {view === "activity" && <ActivityScreen {...screenProps} />}
               {view === "goals" && <GoalsScreen {...screenProps} />}
               {view === "bonuses" && <BonusesScreen {...screenProps} />}
@@ -322,34 +329,38 @@ function Unlock({ store }: { store: Store }) {
           void store.login(pin, person, remember, email);
         }}
       >
-        {!accountSignIn && <fieldset className="person-field">
-          <legend>Who’s here?</legend>
-          {(["Aleem", "Nurul"] as Owner[]).map((name) => (
-            <label key={name} className={person === name ? "selected" : ""}>
-              <input
-                type="radio"
-                name="person"
-                checked={person === name}
-                onChange={() => setPerson(name)}
-              />
-              {name}
-            </label>
-          ))}
-        </fieldset>}
-        {accountSignIn && <label className="form-label">
-          Email
-          <input
-            type="email"
-            name="email"
-            autoComplete="username"
-            autoCapitalize="none"
-            autoCorrect="off"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            placeholder="Your invited email"
-          />
-        </label>}
+        {!accountSignIn && (
+          <fieldset className="person-field">
+            <legend>Who’s here?</legend>
+            {(["Aleem", "Nurul"] as Owner[]).map((name) => (
+              <label key={name} className={person === name ? "selected" : ""}>
+                <input
+                  type="radio"
+                  name="person"
+                  checked={person === name}
+                  onChange={() => setPerson(name)}
+                />
+                {name}
+              </label>
+            ))}
+          </fieldset>
+        )}
+        {accountSignIn && (
+          <label className="form-label">
+            Email
+            <input
+              type="email"
+              name="email"
+              autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              placeholder="Your invited email"
+            />
+          </label>
+        )}
         <label className="form-label">
           {accountSignIn ? "Password" : "Our private PIN"}
           <input

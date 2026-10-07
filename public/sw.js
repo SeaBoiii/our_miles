@@ -2,7 +2,7 @@
 const ROOT = new URL(self.registration.scope).pathname;
 const BASE_PATH = ROOT.replace(/\/$/, "");
 const CACHE_PREFIX = `our-miles-public-${encodeURIComponent(ROOT)}-`;
-const CACHE = `${CACHE_PREFIX}v2`;
+const CACHE = `${CACHE_PREFIX}v4`;
 const PUBLIC_FILES = ["offline.html", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/maskable-512.png", "icons/apple-touch-icon.png"].map((file) => `${ROOT}${file}`);
 
 function publicAsset(url) {
@@ -10,6 +10,7 @@ function publicAsset(url) {
     url.pathname.startsWith(`${ROOT}_next/static/`) ||
     url.pathname.startsWith(`${ROOT}icons/`) ||
     url.pathname.startsWith(`${ROOT}fonts/`) ||
+    url.pathname.startsWith(`${ROOT}cards/`) ||
     PUBLIC_FILES.includes(url.pathname)
   );
 }
@@ -29,10 +30,6 @@ async function cacheShell(cache) {
       const result = await fetch(asset, { cache: "reload", credentials: "omit" });
       if (result.ok) await cache.put(asset, result);
     } catch { /* Runtime caching can fill optional resources after reconnecting. */ }
-  }));
-  await Promise.all(["fonts/instrument-serif.woff2", "fonts/instrument-serif-italic.woff2"].map(async (file) => {
-    try { const result = await fetch(`${ROOT}${file}`, { credentials: "omit" }); if (result.ok) await cache.put(`${ROOT}${file}`, result); }
-    catch { /* System fonts keep the shell usable. */ }
   }));
 }
 

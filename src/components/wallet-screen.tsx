@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -16,20 +16,32 @@ import { REWARD_CATEGORIES } from "@/lib/additional-card-rules";
 import { getCardBenefits } from "@/lib/card-benefits";
 import { formatDate, formatMoney, makeId, today } from "@/lib/state";
 import { Sheet, Progress, SectionHeading } from "./primitives";
+import { CardArt } from "./card-art";
 import type { Store, View } from "./miles-app";
 
 export function WalletScreen({
   store,
   go,
   notify,
+  requestedCardId,
+  onRequestHandled,
+  onSetupSaved,
 }: {
   store: Store;
   go: (view: View) => void;
   notify: (message: string) => void;
+  requestedCardId?: string;
+  onRequestHandled?: () => void;
+  onSetupSaved?: () => void;
 }) {
   const [filter, setFilter] = useState<"Both" | Owner>("Both");
-  const [edit, setEdit] = useState<OwnedCard | null>(null);
+  const [edit, setEdit] = useState<OwnedCard | null>(() => store.state?.cards.find((card) => card.id === requestedCardId) ?? null);
   const [add, setAdd] = useState(false);
+  const [setupRequest, setSetupRequest] = useState(!!requestedCardId);
+  useEffect(() => {
+    if (!requestedCardId) return;
+    onRequestHandled?.();
+  }, [requestedCardId, onRequestHandled]);
   const cards = store.state!.cards.filter(
     (c) => filter === "Both" || c.owner === filter,
   );
@@ -76,7 +88,7 @@ export function WalletScreen({
               key={card.id}
               card={card}
               store={store}
-              onEdit={() => setEdit(card)}
+              onEdit={() => { setSetupRequest(false); setEdit(card); }}
             />
           ))
         ) : (
@@ -108,14 +120,9 @@ export function WalletScreen({
             <button
               className="inactive-row"
               key={card.id}
-              onClick={() => setEdit(card)}
+              onClick={() => { setSetupRequest(false); setEdit(card); }}
             >
-              <span
-                className="issuer-mark"
-                style={{ color: getTemplate(card.templateId)?.accent }}
-              >
-                {getTemplate(card.templateId)?.issuer.slice(0, 1)}
-              </span>
+              <CardArt templateId={card.templateId} className="card-thumbnail" decorative />
               <span>
                 <strong>{getTemplate(card.templateId)?.name}</strong>
                 <span>
@@ -140,7 +147,7 @@ export function WalletScreen({
       </button>
       <Sheet
         open={!!edit}
-        onClose={() => setEdit(null)}
+        onClose={() => { setEdit(null); setSetupRequest(false); }}
         title={edit ? (getTemplate(edit.templateId)?.name ?? "Card") : "Card"}
         description="Confirm ownership, status and current period usage."
       >
@@ -152,6 +159,10 @@ export function WalletScreen({
             onSaved={() => {
               setEdit(null);
               notify("Card updated");
+              if (setupRequest) {
+                setSetupRequest(false);
+                onSetupSaved?.();
+              }
             }}
           />
         )}
@@ -208,9 +219,7 @@ function WalletRow({
     >
       <div className="wallet-row-top">
         <div className="wallet-card-title">
-          <span className="issuer-mark" style={{ color: template.accent }}>
-            {template.issuer.slice(0, 1)}
-          </span>
+          <CardArt templateId={template.id} className="card-thumbnail wallet-card-art" decorative />
           <div>
             <h2>{template.name}</h2>
             <span>
@@ -360,6 +369,9 @@ function CardEditor({
           {store.error}
         </p>
       )}
+      <div className="card-detail-art">
+        <CardArt templateId={template.id} decorative />
+      </div>
       <div className="field-pair">
         <label className="form-label">
           Owner
@@ -603,6 +615,9 @@ function AddCard({ store, onSaved }: { store: Store; onSaved: () => void }) {
           ))}
         </select>
       </label>
+      <div className="card-detail-art">
+        <CardArt templateId={templateId} decorative />
+      </div>
       <p className="muted small">
         We’ll mark usage unknown until you confirm the current cycle. Never add
         card numbers or security details.

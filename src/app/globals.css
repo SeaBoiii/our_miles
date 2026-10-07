@@ -2284,3 +2284,72 @@ summary::-webkit-details-marker {
 .benefit-status { font-size: 12px; color: var(--muted); }
 .benefit-sources { display: flex; flex-wrap: wrap; gap: 8px 16px; }
 .benefit-sources a { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; font-size: 12px; text-decoration: underline; }
+
+/* Retained card imagery and merchant evidence use the original Field Notes palette. */
+.card-art { display: block; width: 100%; aspect-ratio: 1.586; border-radius: 6px; }
+.card-art img { border-radius: inherit; }
+.card-thumbnail { width: 72px; height: auto; flex-shrink: 0; }
+.wallet-card-title .wallet-card-art { margin-top: 0; }
+.inactive-row .card-thumbnail { width: 60px; }
+.activity-card-thumbnail { width: 44px; }
+.card-detail-art { width: 100%; max-width: 260px; margin: 0 auto 24px; }
+.winner-card-art { max-width: 280px; margin: 24px auto 0; filter: drop-shadow(0 5px 8px #00000020); }
+.card-art-fallback { background: var(--soft); color: var(--ink); padding: 12px; }
+.card-art-fallback-name { display: block; font-size: 12px; font-weight: 600; }
+.card-art-fallback-caption { display: block; font-size: 10px; }
+.merchant-lookup { position: relative; scroll-margin-top: 24px; }
+.merchant-lookup > .form-label { margin-bottom: 7px; }
+.merchant-lookup .search-input { padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); gap: 8px; }
+.merchant-lookup .search-input > svg { margin-left: 12px; }
+.merchant-lookup .search-input input { padding: 13px 12px 13px 0; font-size: 16px; background: transparent; }
+.merchant-lookup .search-input:focus-within { outline: 2px solid var(--forest); outline-offset: 1px; }
+.merchant-lookup .search-input input:focus { outline: 0; border: 0; }
+.merchant-suggestions { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 10; padding: 4px; margin: 0; list-style: none; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); box-shadow: 0 8px 22px #173d351a; max-height: 290px; overflow: auto; }
+.merchant-suggestions li { display: flex; flex-direction: column; gap: 3px; min-height: 52px; margin: 0; padding: 10px; cursor: pointer; font-size: 13px; }
+.merchant-suggestions li.selected, .merchant-suggestions li:hover { background: var(--soft); border-radius: 3px; }
+.merchant-suggestions small { color: var(--muted); font-size: 11px; }
+.merchant-evidence { font-size: 12px; color: var(--muted); }
+.merchant-evidence summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 44px; font-size: 11px; cursor: pointer; }
+.merchant-evidence p { margin: 7px 0; line-height: 1.7; }
+.merchant-evidence a { display: inline-flex; gap: 4px; align-items: center; min-height: 44px; text-decoration: underline; }
+.merchant-evidence > span { display: block; }
+.mcc-code-results { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.mcc-code-results button { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 10px 0; text-align: left; border-bottom: 1px solid var(--line); font-size: 12px; }
+.mcc-code-results button span { flex: 1; }
+.directory-links { display: flex; flex-direction: column; }
+.directory-links > a { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.directory-links > a > span { flex: 1; }
+.directory-links strong { font-size: 12px; }
+.directory-links small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.purchase-details p a, .muted a { text-decoration: underline; text-underline-offset: 3px; }
+.setup-candidates { padding: 18px; margin-bottom: 20px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); }
+.setup-candidates h2 { font-size: 25px; line-height: 1.2; margin-bottom: 7px; }
+.setup-candidates > p { font-size: 11px; line-height: 1.7; }
+.setup-candidate { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.comparison-heading { display: flex; align-items: center; gap: 12px; }
+.comparison-heading > div { min-width: 0; }
+.comparison-heading strong { font-size: 12px; }
+.comparison-heading span { display: block; font-size: 11px; color: var(--muted); margin-top: 4px; }
+.setup-candidate details { font-size: 11px; color: var(--muted); }
+.setup-candidate summary { display: flex; align-items: center; justify-content: space-between; min-height: 44px; cursor: pointer; }
+.setup-candidate ul, .comparison-detail ul { padding-left: 18px; margin: 8px 0; }
+.setup-candidate li, .comparison-detail li { margin: 6px 0; line-height: 1.6; }
+.setup-candidate .text-action { font-size: 11px; min-height: 44px; }
+.card-comparison > summary { display: flex; align-items: center; gap: 10px; min-height: 48px; border-bottom: 1px solid var(--line); font-size: 12px; cursor: pointer; }
+.card-comparison > summary > span { margin-left: auto; color: var(--muted); }
+.comparison-row { border-bottom: 1px solid var(--line); }
+.comparison-row > summary { display: flex; align-items: center; gap: 9px; min-height: 75px; padding: 12px 0; cursor: pointer; }
+.comparison-row .card-thumbnail { width: 50px; }
+.comparison-copy { flex: 1; min-width: 0; }
+.comparison-copy strong { display: block; font-size: 12px; }
+.comparison-copy span { display: block; font-size: 10px; color: var(--muted); margin-top: 4px; }
+.comparison-rate { font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.comparison-detail { padding-bottom: 12px; font-size: 11px; color: var(--muted); }
+.comparison-detail p { margin: 8px 0; line-height: 1.7; }
+.comparison-detail .text-action { font-size: 11px; min-height: 44px; }
+/* Preserve reachable sheet dismissal without changing the original typography or surface. */
+.sheet-content { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.sheet-handle, .sheet-heading, .sheet-description { flex-shrink: 0; }
+.sheet-description { margin-bottom: 8px; }
+.sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px 1px calc(24px + env(safe-area-inset-bottom)); }
+@media (max-width: 380px) { .wallet-card-art { width: 62px; } }

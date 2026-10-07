@@ -26,13 +26,13 @@
   "components": {
     "installed": [],
     "preferredPrimitives": ["Radix Dialog"],
-    "patterns": ["four labeled bottom destinations", "instant card comparison", "bottom sheets", "textual uncertainty", "owner-first recommendation"]
+    "patterns": ["four labeled bottom destinations", "instant card comparison", "bottom sheets", "textual uncertainty", "owner-first recommendation", "authentic locally hosted issuer card artwork", "sourced merchant suggestions with textual confidence", "conditional setup comparisons with direct card setup"]
   },
   "constraints": {
     "must": ["recommendation correctness", "one-handed phone usability", "explicit demo isolation", "source-verified financial rules", "reduced motion"],
     "avoid": ["metric card grids", "glassmorphism", "decorative gradients", "literal airplane clipart", "headline-mpd-only ranking"]
   },
-  "decisions": [{ "direction": "Field Notes", "reason": "Editorial family resemblance with a task-forward finder and restrained shared travel context", "source": "docs/DESIGN_RESEARCH.md" }],
+  "decisions": [{ "direction": "Field Notes", "reason": "Editorial family resemblance with a task-forward finder and restrained shared travel context", "source": "docs/DESIGN_RESEARCH.md" }, { "direction": "Field Notes retained", "reason": "Aleem explicitly requested the previous visual design while keeping card images, merchant coverage and recommendation improvements", "source": "User instruction, 7 October 2026" }],
   "evidence": [
     {
       "fact": "project.instructions",
