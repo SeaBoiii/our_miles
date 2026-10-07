@@ -1,5 +1,6 @@
 import type {
   CardCapacity,
+  AnnualQualificationProgress,
   CardRule,
   CardTemplate,
   Confidence,
@@ -12,7 +13,7 @@ import type {
   Transaction,
   WelcomeOffer,
 } from "./domain";
-import { daysBetween, getPeriod, inPeriod, singaporeDate } from "./periods";
+import { daysBetween, getAnnualPeriod, getCalendarQuarter, getPeriod, inPeriod, singaporeDate } from "./periods";
 import { CARD_TEMPLATES, getTemplate } from "./rules";
 
 const confidenceOrder: Record<Confidence, number> = {
@@ -48,6 +49,8 @@ export function matchConditions(
   conditions: RuleConditions,
 ): { eligible: boolean; confidence: Confidence } {
   if (purchase.excluded) return { eligible: false, confidence: "Confirmed" };
+  if (conditions.excludeRecurring && purchase.recurring) return { eligible: false, confidence: "Confirmed" };
+  if (conditions.rewardPartners && (!purchase.rewardPartner || !conditions.rewardPartners.includes(purchase.rewardPartner))) return { eligible: false, confidence: purchase.rewardPartner ? "Confirmed" : "Unverified" };
   if (conditions.channels && !conditions.channels.includes(purchase.channel))
     return { eligible: false, confidence: "Confirmed" };
   if (
@@ -55,7 +58,7 @@ export function matchConditions(
     !conditions.paymentMethods.includes(purchase.paymentMethod)
   )
     return { eligible: false, confidence: "Confirmed" };
-  if (conditions.excludedPaymentMethods?.includes(purchase.paymentMethod))
+  if (conditions.excludedPaymentMethods?.includes(purchase.paymentMethod) || (purchase.paymentMethod === "samsung-pay" && conditions.excludedPaymentMethods?.includes("mobile-wallet")))
     return { eligible: false, confidence: "Confirmed" };
   if (
     conditions.currency &&
@@ -64,6 +67,7 @@ export function matchConditions(
   )
     return { eligible: false, confidence: "Confirmed" };
   const merchant = purchase.merchant.toLowerCase();
+  if (conditions.excludedMerchantWords?.some((word) => merchant.split(/[^\p{L}\p{N}]+/u).includes(word.toLowerCase()))) return { eligible: false, confidence: "Confirmed" };
   if (
     conditions.merchantIncludes &&
     !conditions.merchantIncludes.some((part) =>
@@ -82,7 +86,7 @@ export function matchConditions(
   if (purchase.mcc !== undefined) {
     if (
       !Number.isInteger(purchase.mcc) ||
-      purchase.mcc < 1000 ||
+      purchase.mcc < 0 ||
       purchase.mcc > 9999
     )
       return { eligible: false, confidence: "Unverified" };
@@ -137,7 +141,15 @@ export function activeRules(template: CardTemplate, date: string): CardRule[] {
   return [...byId.values()];
 }
 
-function bankingDate(transaction: Transaction, card: OwnedCard): string {
+function bankingDate(transaction: Transaction, card: OwnedCard, rule?: CardRule, minimum = false): string {
+  if (minimum && rule?.minimumSpend?.postingGraceDays && transaction.postedDate) {
+    const spent = singaporeDate(transaction.date);
+    const nextMonth = getPeriod(spent, "calendar-month")!.end;
+    const graceDeadline = `${nextMonth.slice(0, 7)}-${String(rule.minimumSpend.postingGraceDays).padStart(2, "0")}`;
+    return singaporeDate(transaction.postedDate) <= graceDeadline ? spent : transaction.postedDate;
+  }
+  if (rule?.periodDate === "transaction") return transaction.date;
+  if (rule?.periodDate === "posting") return transaction.postedDate ?? transaction.date;
   if (card.templateId === "maybank-xl" && transaction.postedDate) {
     const spent = singaporeDate(transaction.date);
     const nextMonth = getPeriod(spent, "calendar-month")!.end;
@@ -153,12 +165,14 @@ function periodTransactions(
   card: OwnedCard,
   transactions: Transaction[],
   period: { start: string; end: string },
+  rule?: CardRule,
+  minimum = false,
 ): Transaction[] {
   return transactions.filter(
     (transaction) =>
       transaction.cardId === card.id &&
       transaction.status !== "reversed" &&
-      inPeriod(bankingDate(transaction, card), period),
+      inPeriod(bankingDate(transaction, card, rule, minimum), period),
   );
 }
 
@@ -175,12 +189,48 @@ function opening(
   );
 }
 
+function selectedCategoryMatches(card: OwnedCard, rule: CardRule, date: string): boolean {
+  return !rule.selectedCategory || (card.selectedRewardCategory === rule.selectedCategory && card.selectedRewardCategoryPeriodStart === getCalendarQuarter(date).start);
+}
+
+function capGroups(template: CardTemplate | undefined, date: string): number {
+  return new Set(template ? activeRules(template, date).flatMap((rule) => rule.cap ? [rule.cap.group] : []) : []).size;
+}
+
+function openingCap(card: OwnedCard, period: { start: string; end: string }, rule: CardRule, multipleGroups: boolean): number {
+  if (card.openingPeriodStart !== period.start) return 0;
+  if (rule.cap && card.openingCapSpendSgd?.[rule.cap.group] !== undefined) return positive(card.openingCapSpendSgd[rule.cap.group]);
+  return multipleGroups ? 0 : positive(card.openingSpendSgd);
+}
+
+function capKnown(card: OwnedCard, rule: CardRule, multipleGroups: boolean): boolean {
+  return rule.cap ? (card.capUsageKnown?.[rule.cap.group] ?? (!multipleGroups && card.usageKnown)) : card.usageKnown;
+}
+
+function reservedUsage(records: Transaction[], rule: CardRule, template?: CardTemplate): number {
+  if (rule.cap?.usageRounding === "raw") return records.reduce((sum, record) => sum + record.reward.bonusSpendSgd, 0);
+  let total = 0;
+  const aggregated = new Map<string, { amount: number; rule: CardRule }>();
+  for (const record of records) {
+    const historical = template?.rules.find((candidate) => candidate.id === record.reward.ruleId && candidate.version === record.reward.ruleVersion) ?? rule;
+    if (historical.rounding?.scope === "period") {
+      const key = record.reward.roundingGroup ?? historical.rounding.group ?? historical.cap?.group ?? historical.id;
+      const bucket = aggregated.get(key) ?? { amount: 0, rule: historical };
+      bucket.amount += record.reward.bonusSpendSgd;
+      aggregated.set(key, bucket);
+    } else total += roundedSpend(record.reward.bonusSpendSgd, historical);
+  }
+  return total + [...aggregated.values()].reduce((sum, bucket) => sum + roundedSpend(bucket.amount, { ...bucket.rule, rounding: { ...bucket.rule.rounding!, scope: "transaction" } }), 0);
+}
+
 function ruleUsage(
   card: OwnedCard,
   transactions: Transaction[],
   rule: CardRule,
   date: string,
+  template?: CardTemplate,
 ) {
+  const multipleGroups = capGroups(template, date) > 1;
   const period = rule.cap
     ? getPeriod(date, rule.cap.period, card.statementDay)
     : rule.rounding?.scope === "period"
@@ -189,15 +239,15 @@ function ruleUsage(
   const minPeriod = rule.minimumSpend
     ? getPeriod(date, rule.minimumSpend.period, card.statementDay)
     : period;
-  const records = period ? periodTransactions(card, transactions, period) : [];
+  const records = period ? periodTransactions(card, transactions, period, rule) : [];
   const eligibleRecords = records.filter(
     (transaction) => transaction.reward.bonusCapGroup === rule.cap?.group,
   );
-  const openingSpend = period ? opening(card, period) : 0;
+  const openingSpend = period ? openingCap(card, period, rule, multipleGroups) : 0;
   // Reserve eligible spending before the cap, so late posting into a new period
   // cannot inherit the old period's clipped bonus allocation and undercount usage.
   const used =
-    rule.rounding?.scope === "period"
+    rule.cap?.usageRounding !== "raw" && rule.rounding?.scope === "period" && !rule.rounding.group
       ? roundedSpend(
           openingSpend +
             eligibleRecords.reduce(
@@ -206,15 +256,10 @@ function ruleUsage(
             ),
           { ...rule, rounding: { ...rule.rounding, scope: "transaction" } },
         )
-      : openingSpend +
-        eligibleRecords.reduce(
-          (total, transaction) =>
-            total + roundedSpend(transaction.reward.bonusSpendSgd, rule),
-          0,
-        );
+      : openingSpend + reservedUsage(eligibleRecords, rule, template);
   const qualifying = minPeriod
     ? opening(card, minPeriod, true) +
-      periodTransactions(card, transactions, minPeriod)
+      periodTransactions(card, transactions, minPeriod, rule, true)
         .filter((transaction) => transaction.status !== "pending")
         .reduce(
           (total, transaction) => total + transaction.reward.qualifyingSpendSgd,
@@ -226,7 +271,7 @@ function ruleUsage(
     used: money(used),
     qualifying: money(qualifying),
     remaining: rule.cap
-      ? card.usageKnown && period
+      ? capKnown(card, rule, multipleGroups) && period
         ? money(Math.max(0, rule.cap.spendSgd - used))
         : null
       : null,
@@ -239,6 +284,16 @@ export function getCardCapacity(
   date: string,
   templates: CardTemplate[] = CARD_TEMPLATES,
 ): CardCapacity {
+  const capacities = getCardCapacities(card, transactions, date, templates);
+  if (capacities[0]) return capacities[0];
+  const template = getTemplate(card.templateId, templates);
+  const rules = template ? activeRules(template, date) : [];
+  const top = rules.sort((a, b) => b.milesPerDollar - a.milesPerDollar || b.cashbackRate - a.cashbackRate)[0];
+  return { remainingSgd: null, usedSgd: 0, capSgd: null, periodStart: null, periodEnd: null, period: null, milesPerDollar: top?.milesPerDollar ?? 0, minimumSpendSgd: null, qualifyingSpendSgd: 0, minimumSpendRemainingSgd: 0 };
+}
+
+/** Each independent bucket is shown once; channels sharing a group share capacity. */
+export function getCardCapacities(card: OwnedCard, transactions: Transaction[], date: string, templates: CardTemplate[] = CARD_TEMPLATES): CardCapacity[] {
   const template = getTemplate(card.templateId, templates);
   const rules = template ? activeRules(template, date) : [];
   const capped = rules
@@ -246,15 +301,18 @@ export function getCardCapacity(
     .sort(
       (a, b) =>
         b.milesPerDollar - a.milesPerDollar || b.cashbackRate - a.cashbackRate,
-    )[0];
-  const top =
-    capped ??
-    rules.sort(
-      (a, b) =>
-        b.milesPerDollar - a.milesPerDollar || b.cashbackRate - a.cashbackRate,
-    )[0];
-  const usage = capped ? ruleUsage(card, transactions, capped, date) : null;
-  return {
+    );
+  const groups = new Map<string, CardRule>();
+  for (const rule of capped) if (!groups.has(rule.cap!.group) || selectedCategoryMatches(card, rule, date)) {
+    const existing = groups.get(rule.cap!.group);
+    if (!existing || (!selectedCategoryMatches(card, existing, date) && selectedCategoryMatches(card, rule, date))) groups.set(rule.cap!.group, rule);
+  }
+  return [...groups.values()].map((capped) => {
+    const usage = ruleUsage(card, transactions, capped, date, template);
+    const top = selectedCategoryMatches(card, capped, date) ? capped : rules.filter((rule) => !rule.cap).sort((a, b) => b.milesPerDollar - a.milesPerDollar)[0];
+    return {
+    group: capped.cap!.group,
+    label: capped.cap!.label ?? capped.label,
     remainingSgd: usage?.remaining ?? null,
     usedSgd: usage?.used ?? 0,
     capSgd: capped?.cap?.spendSgd ?? null,
@@ -268,7 +326,17 @@ export function getCardCapacity(
       0,
       (capped?.minimumSpend?.amountSgd ?? 0) - (usage?.qualifying ?? 0),
     ),
-  };
+  }; });
+}
+
+export function getAnnualQualificationProgress(card: OwnedCard, transactions: Transaction[], date: string, templates: CardTemplate[] = CARD_TEMPLATES): AnnualQualificationProgress | null {
+  const template = getTemplate(card.templateId, templates);
+  const qualification = template ? activeRules(template, date).find((rule) => rule.annualQualification)?.annualQualification : undefined;
+  if (!qualification) return null;
+  const period = getAnnualPeriod(date, card.annualQualificationStart, card.annualQualificationEnd);
+  const known = !!period && !!card.annualUsageKnown;
+  const qualifyingSpendSgd = known ? money(positive(card.openingAnnualQualifyingSpendSgd) + transactions.filter((record) => record.cardId === card.id && record.status !== "pending" && record.status !== "reversed" && inPeriod(record.postedDate ?? record.date, period!) && matchConditions(record, qualification.conditions).eligible && matchConditions(record, qualification.conditions).confidence !== "Unverified").reduce((sum, record) => sum + record.amountSgd, 0)) : 0;
+  return { known, qualified: known && qualifyingSpendSgd >= qualification.amountSgd, qualifyingSpendSgd, requiredSpendSgd: qualification.amountSgd, remainingSgd: Math.max(0, qualification.amountSgd - qualifyingSpendSgd), periodStart: period?.start ?? null, periodEnd: period?.end ?? null };
 }
 
 function roundedSpend(
@@ -284,6 +352,19 @@ function roundedSpend(
         Math.floor((previousQualifying + 1e-9) / block) * block,
     );
   return money(Math.floor((amount + 1e-9) / block) * block);
+}
+
+function roundedMiles(amount: number, milesPerDollar: number, unitMiles: number, previousAmount = 0): number {
+  return rewardNumber((Math.floor(((previousAmount + amount) * milesPerDollar + 1e-9) / unitMiles) - Math.floor((previousAmount * milesPerDollar + 1e-9) / unitMiles)) * unitMiles);
+}
+
+function rewardGroupPrior(card: OwnedCard, transactions: Transaction[], rule: CardRule, period: { start: string; end: string } | null, template: CardTemplate, group: string, component = false): { amount: number; known: boolean; confidence: Confidence } {
+  if (!period) return { amount: 0, known: false, confidence: "Unverified" };
+  const capOpening = openingCap(card, period, rule, capGroups(template, period.start) > 1);
+  const explicitOpening = card.openingPeriodStart === period.start ? card.openingRewardSpendSgd?.[group] ?? (component && group === rule.cap?.group ? capOpening : undefined) : undefined;
+  const records = periodTransactions(card, transactions, period, rule).filter((record) => component ? record.reward.bonusRoundingGroup === group : record.reward.roundingGroup === group);
+  const confidence = records.reduce((result, record) => lesserConfidence(result, matchConditions(record, rule.conditions).confidence), "Confirmed" as Confidence);
+  return { amount: positive(explicitOpening) + records.reduce((sum, record) => sum + (component ? record.reward.bonusSpendSgd : record.amountSgd), 0), known: (capOpening === 0 || explicitOpening !== undefined) && confidence !== "Unverified", confidence };
 }
 
 function offerSpend(offer: WelcomeOffer, transactions: Transaction[]): number {
@@ -400,37 +481,56 @@ function calculate(
     chosen.verification,
     matchConditions(purchase, chosen.conditions).confidence,
   );
-  const usage = ruleUsage(card, context.transactions, chosen, purchase.date);
+  const usage = ruleUsage(card, context.transactions, chosen, purchase.date, template);
   const qualifies = matchConditions(purchase, chosen.conditions).eligible;
   const baseMpd =
-    base?.milesPerDollar ?? (chosen.cap ? 0 : chosen.milesPerDollar);
+    base?.milesPerDollar ?? (chosen.cap || chosen.annualQualification ? 0 : chosen.milesPerDollar);
   const baseCashback =
-    base?.cashbackRate ?? (chosen.cap ? 0 : chosen.cashbackRate);
+    base?.cashbackRate ?? (chosen.cap || chosen.annualQualification ? 0 : chosen.cashbackRate);
   const priorSpend = usage.period
     ? opening(card, usage.period, true) +
-      periodTransactions(card, context.transactions, usage.period).reduce(
+      periodTransactions(card, context.transactions, usage.period, chosen).reduce(
         (sum, record) => sum + record.reward.qualifyingSpendSgd,
         0,
       )
     : 0;
-  const priorBonusSpend =
+  let priorBonusSpend =
     usage.period && chosen.cap
-      ? opening(card, usage.period) +
-        periodTransactions(card, context.transactions, usage.period)
+      ? openingCap(card, usage.period, chosen, capGroups(template, purchase.date) > 1) +
+        periodTransactions(card, context.transactions, usage.period, chosen)
           .filter((record) => record.reward.bonusCapGroup === chosen.cap?.group)
           .reduce((sum, record) => sum + record.reward.qualifyingSpendSgd, 0)
       : priorSpend;
-  const earnedSpend = roundedSpend(purchase.amountSgd, chosen, priorBonusSpend);
+  const aggregatePrior = chosen.rounding?.group ? rewardGroupPrior(card, context.transactions, chosen, usage.period, template, chosen.rounding.group) : undefined;
+  if (aggregatePrior) priorBonusSpend = aggregatePrior.amount;
+  const componentPrior = chosen.bonusRounding?.scope === "period" && chosen.bonusRounding.group ? rewardGroupPrior(card, context.transactions, chosen, usage.period, template, chosen.bonusRounding.group, true) : undefined;
+  if (aggregatePrior) confidence = lesserConfidence(confidence, aggregatePrior.confidence);
+  if (componentPrior) confidence = lesserConfidence(confidence, componentPrior.confidence);
+  const earnedSpend = chosen.bonusRounding ? purchase.amountSgd : roundedSpend(purchase.amountSgd, chosen, priorBonusSpend);
+  const baseGroupPrior = base?.rounding?.group ? rewardGroupPrior(card, context.transactions, base, usage.period, template, base.rounding.group) : undefined;
   const baseSpend = roundedSpend(
     purchase.amountSgd,
     base ?? chosen,
-    priorSpend,
+    baseGroupPrior?.amount ?? (chosen.rounding?.group ? aggregatePrior?.amount ?? 0 : priorSpend),
   );
   let bonusSpend = chosen.cap
     ? Math.min(earnedSpend, usage.remaining ?? 0)
     : earnedSpend;
   const reservedBonusSpend = chosen.cap ? purchase.amountSgd : 0;
   let minimumSpendIncrementalMiles = 0;
+  if (aggregatePrior?.known === false || componentPrior?.known === false) {
+    bonusSpend = 0;
+    confidence = "Unverified";
+    warnings.push("Confirm opening spend for this reward component. Bonus point carry is unknown; only base rewards are estimated.");
+  }
+  if (chosen.annualQualification) {
+    const qualification = getAnnualQualificationProgress(card, context.transactions, purchase.date, context.templates ?? CARD_TEMPLATES);
+    if (!qualification?.qualified) {
+      bonusSpend = 0;
+      if (!qualification?.known) confidence = "Unverified";
+      warnings.push(qualification?.known ? `S$${money(qualification.remainingSgd)} more posted eligible airline-group spend is required this membership year. Only base miles are estimated.` : "Confirm your membership year and posted eligible airline-group spend. Only base miles are estimated.");
+    } else warnings.push("The accelerated portion is deferred until the bank awards it after this membership year ends; this is an earned-mile estimate, not an immediate credit.");
+  }
   if (chosen.cap && usage.remaining === null) {
     confidence = "Unverified";
     warnings.push(
@@ -503,7 +603,7 @@ function calculate(
     confidence === "Unverified" &&
     purchase.mcc !== undefined &&
     purchase.mccConfidence !== "Confirmed" &&
-    chosen.cap
+    (chosen.cap || chosen.annualQualification)
   ) {
     bonusSpend = 0;
     warnings.push(
@@ -547,9 +647,10 @@ function calculate(
       "These terms were last checked over six months ago. Recheck the source before relying on them.",
     );
   }
-  const miles = rewardNumber(
-    baseSpend * baseMpd + bonusSpend * (chosen.milesPerDollar - baseMpd),
-  );
+  const baseComponents = chosen.baseComponents ?? base?.baseComponents;
+  const baseMiles = baseComponents ? baseComponents.reduce((sum, component) => sum + roundedMiles(purchase.amountSgd, component.milesPerDollar, component.roundingUnitMiles), 0) : baseSpend * baseMpd;
+  const bonusMiles = chosen.bonusRounding ? roundedMiles(bonusSpend, chosen.milesPerDollar - baseMpd, chosen.bonusRounding.unitMiles, chosen.bonusRounding.scope === "period" ? componentPrior?.amount ?? priorBonusSpend : 0) : bonusSpend * (chosen.milesPerDollar - baseMpd);
+  const miles = rewardNumber(baseMiles + bonusMiles);
   const cashbackSgd = money(
     purchase.amountSgd * baseCashback +
       bonusSpend * (chosen.cashbackRate - baseCashback),
@@ -623,6 +724,8 @@ function calculate(
       confidence,
       bonusSpendSgd: chosen.cap ? reservedBonusSpend : 0,
       bonusCapGroup: chosen.cap?.group,
+      roundingGroup: chosen.rounding?.group,
+      bonusRoundingGroup: chosen.bonusRounding?.group,
       periodStart: usage.period?.start,
       periodEnd: usage.period?.end,
       qualifyingSpendSgd: qualifies ? purchase.amountSgd : 0,
@@ -663,11 +766,12 @@ export function recommend(
     const rules = activeRules(template, purchase.date).filter(
       (rule) =>
         rule.verification !== "Unverified" &&
+        selectedCategoryMatches(card, rule, purchase.date) &&
         matchConditions(purchase, rule.conditions).eligible &&
         (purchase.currency.toUpperCase() === "SGD" || rule.fxFeeRate !== null),
     );
     const base = rules
-      .filter((rule) => !rule.cap)
+      .filter((rule) => !rule.cap && !rule.annualQualification)
       .sort(
         (a, b) =>
           b.milesPerDollar - a.milesPerDollar ||
@@ -679,14 +783,25 @@ export function recommend(
         card,
         template,
         rule,
-        rule.cap ? base : undefined,
+        rule.cap || rule.annualQualification ? (rule.rounding?.group ? rules.filter((candidate) => !candidate.cap && !candidate.annualQualification && candidate.rounding?.group === rule.rounding?.group).sort((a, b) => b.milesPerDollar - a.milesPerDollar)[0] ?? base : base) : undefined,
         context,
       ),
     );
     candidates.sort(
       (a, b) => b.netValueSgd - a.netValueSgd || b.headlineMpd - a.headlineMpd,
     );
-    if (candidates[0]) results.push(candidates[0]);
+    if (candidates[0]) {
+      const result = candidates[0];
+      if (activeRules(template, purchase.date).some((rule) => rule.selectedCategory) && (!card.selectedRewardCategory || card.selectedRewardCategoryPeriodStart !== getCalendarQuarter(purchase.date).start)) {
+        const warning = "Confirm the rewards category registered with the bank for this calendar quarter. Only base rewards are estimated.";
+        result.warnings.push(warning);
+      }
+      if (activeRules(template, purchase.date).some((rule) => rule.conditions.rewardPartners) && !purchase.rewardPartner && purchase.category === "travel") {
+        const warning = "Select the confirmed booking partner to check airline-group rewards. A merchant name alone does not confirm eligibility.";
+        result.warnings.push(warning);
+      }
+      results.push(result);
+    }
   }
   return results.sort((a, b) => {
     const net = b.netValueSgd - a.netValueSgd;

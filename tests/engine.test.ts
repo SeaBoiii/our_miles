@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CardTemplate, OwnedCard, Purchase, RecommendationContext, Transaction, WelcomeOffer } from "../src/lib/domain";
-import { getCardCapacity, getOfferProgress, recommend } from "../src/lib/engine";
-import { getPeriod, singaporeDate } from "../src/lib/periods";
+import { getAnnualQualificationProgress, getCardCapacities, getCardCapacity, getOfferProgress, matchConditions, recommend } from "../src/lib/engine";
+import { getAnnualPeriod, getCalendarQuarter, getPeriod, singaporeDate } from "../src/lib/periods";
 import { CARD_TEMPLATES, initialCards } from "../src/lib/rules";
 
 const TODAY = "2026-10-05";
@@ -31,6 +31,216 @@ describe("Singapore banking periods", () => {
     expect(getPeriod(TODAY, "statement-month")).toBeNull();
     expect(() => singaporeDate("2026-02-30")).toThrow();
     expect(() => singaporeDate("2026-10-05T00:00:00")).toThrow();
+  });
+});
+
+describe("independent buckets and card-specific reward calculations", () => {
+  const ppv = (override: Partial<OwnedCard> = {}) => card("uob-ppv", { openingCapSpendSgd: { "uob-ppv-online": 0, "uob-ppv-mobile": 0 }, capUsageKnown: { "uob-ppv-online": true, "uob-ppv-mobile": true }, ...override });
+  const mobile = (override: Partial<Purchase> = {}) => purchase({ category: "dining", channel: "contactless", paymentMethod: "apple-pay", mcc: 5812, amountSgd: 100, ...override });
+  const simplyGo = (override: Partial<Purchase> = {}) => mobile({ amountSgd: 2.5, merchant: "BUS/MRT SimplyGo", category: "transport", mcc: 4111, ...override });
+
+  it("uses Singapore quarter boundaries and validates exclusive membership years", () => {
+    expect(getCalendarQuarter("2026-12-31T16:00:00Z")).toEqual({ start: "2027-01-01", end: "2027-04-01" });
+    expect(getAnnualPeriod("2027-04-30", "2026-05-01", "2027-05-01")).toEqual({ start: "2026-05-01", end: "2027-05-01" });
+    expect(getAnnualPeriod("2027-05-01", "2026-05-01", "2027-05-01")).toBeNull();
+    expect(getAnnualPeriod(TODAY, "2026-05-02", "2027-05-02")).toBeNull();
+    expect(getAnnualPeriod(TODAY, "2026-05-01", "2027-06-01")).toBeNull();
+  });
+  it("keeps PPV online and mobile opening usage and transactions independent", () => {
+    const selected = ppv({ openingCapSpendSgd: { "uob-ppv-online": 590, "uob-ppv-mobile": 100 } });
+    const online = record(purchase({ amountSgd: 30 }), selected, context([selected]));
+    expect(online.reward.miles).toBe(48);
+    const buckets = getCardCapacities(selected, [online], TODAY);
+    expect(buckets).toHaveLength(2);
+    expect(buckets.find((bucket) => bucket.group === "uob-ppv-online")?.remainingSgd).toBe(0);
+    expect(buckets.find((bucket) => bucket.group === "uob-ppv-mobile")?.remainingSgd).toBe(500);
+    expect(recommend(mobile(), context([selected], { transactions: [online] }))[0].miles).toBe(400);
+  });
+  it("does not reuse legacy scalar opening usage for multiple unknown buckets", () => {
+    const selected = card("uob-ppv", { usageKnown: true, openingSpendSgd: 500 });
+    expect(getCardCapacities(selected, [], TODAY).every((bucket) => bucket.remainingSgd === null)).toBe(true);
+    expect(recommend(purchase({ amountSgd: 100 }), context([selected]))[0].miles).toBe(40);
+    const partial = ppv({ capUsageKnown: { "uob-ppv-online": false, "uob-ppv-mobile": true } });
+    expect(recommend(purchase({ amountSgd: 100 }), context([partial]))[0].miles).toBe(40);
+    expect(recommend(mobile(), context([partial]))[0].miles).toBe(400);
+  });
+  it("requires an approved mobile tap and excludes recurring online bonus", () => {
+    const ctx = context([ppv()]);
+    expect(recommend(mobile({ paymentMethod: "card" }), ctx)[0].miles).toBe(40);
+    expect(recommend(mobile({ paymentMethod: "samsung-pay" }), ctx)[0].miles).toBe(400);
+    expect(recommend(mobile({ paymentMethod: "mobile-wallet" }), ctx)[0].miles).toBe(40);
+    expect(recommend(purchase({ amountSgd: 100, recurring: true }), ctx)[0].miles).toBe(40);
+    expect(recommend(purchase({ amountSgd: 100, paymentMethod: "apple-pay" }), ctx)[0].miles).toBe(400);
+    expect(recommend(purchase({ amountSgd: 100, paymentMethod: "samsung-pay" }), context([card()]))[0].miles).toBe(40);
+  });
+  it("accumulates SimplyGo monthly without pooling other mobile fractional spend", () => {
+    const selected = ppv();
+    const ordinary = record(mobile({ amountSgd: 4.99 }), selected, context([selected]), "ordinary");
+    const first = record(simplyGo(), selected, context([selected], { transactions: [ordinary] }), "ride-1");
+    expect(first.reward.miles).toBe(0);
+    const second = recommend(simplyGo(), context([selected], { transactions: [ordinary, first] }))[0];
+    expect(second.miles).toBe(20);
+    expect(second.snapshot.roundingGroup).toBe("uob-ppv-simplygo");
+    const third = { ...simplyGo(), id: "ride-2", cardId: selected.id, status: "posted" as const, reward: second.snapshot };
+    expect(getCardCapacities(selected, [ordinary, first, third], TODAY).find((bucket) => bucket.group === "uob-ppv-mobile")?.usedSgd).toBe(5);
+    const uncertain = recommend(simplyGo({ mcc: undefined, mccConfidence: undefined }), context([selected], { transactions: [first] }))[0];
+    expect(uncertain.miles).toBe(20);
+    expect(uncertain.confidence).toBe("Likely");
+    const physicalFirst = record(simplyGo({ paymentMethod: "card" }), selected, context([selected]), "physical-1");
+    expect(physicalFirst.reward.miles).toBe(0);
+    expect(recommend(simplyGo({ paymentMethod: "card" }), context([selected], { transactions: [physicalFirst] }))[0].miles).toBe(2);
+    expect(recommend(purchase({ amountSgd: 100, category: "shopping", channel: "in-store", mcc: undefined, mccConfidence: undefined }), context([selected]))[0].miles).toBe(40);
+  });
+  it("requires Lady's current registered category and aggregates its monthly bonus", () => {
+    const unknown = card("uob-ladys");
+    const request = purchase({ category: "dining", mcc: 5812, amountSgd: 518 });
+    expect(recommend(request, context([unknown]))[0].miles).toBe(206);
+    const selected = card("uob-ladys", { selectedRewardCategory: "dining", selectedRewardCategoryPeriodStart: "2026-10-01" });
+    const first = record(request, selected, context([selected]), "dining-1");
+    const second = record(purchase({ category: "dining", mcc: 5812, amountSgd: 182 }), selected, context([selected], { transactions: [first] }), "dining-2");
+    const third = record(purchase({ category: "dining", mcc: 5812, amountSgd: 100 }), selected, context([selected], { transactions: [first, second] }), "dining-3");
+    expect(first.reward.miles + second.reward.miles + third.reward.miles).toBe(3198);
+    expect(recommend(request, context([{ ...selected, selectedRewardCategory: "fashion" }]))[0].miles).toBe(206);
+    expect(recommend(request, context([{ ...selected, selectedRewardCategoryPeriodStart: "2026-07-01" }]))[0].miles).toBe(206);
+  });
+  it("floors DBS base, foreign and monthly bonus components independently", () => {
+    const selected = card("dbs-wwmc");
+    expect(recommend(purchase({ amountSgd: 512 }), context([selected]))[0].miles).toBe(2046);
+    expect(recommend(purchase({ amountSgd: 512, currency: "USD" }), context([selected]))[0].miles).toBe(2044);
+    const first = record(purchase({ amountSgd: 2.5 }), selected, context([selected]));
+    expect(first.reward.miles).toBe(8);
+    expect(first.reward.miles + recommend(purchase({ amountSgd: 2.5 }), context([selected], { transactions: [first] }))[0].miles).toBe(18);
+    expect(recommend(purchase({ amountSgd: 2.5, currency: "USD" }), context([selected], { transactions: [first] }))[0].miles).toBe(8);
+  });
+  it("uses DBS gross shared cap with separate local/foreign opening point carry", () => {
+    const selected = card("dbs-wwmc", { openingSpendSgd: 999.7, openingRewardSpendSgd: { "dbs-wwmc-online-local": 999.7, "dbs-wwmc-online-foreign": 0 } });
+    expect(getCardCapacity(selected, [], TODAY).remainingSgd).toBe(0.3);
+    expect(recommend(purchase({ amountSgd: 10 }), context([selected]))[0].miles).toBe(6);
+    const unknownCarry = recommend(purchase({ amountSgd: 10 }), context([{ ...selected, openingRewardSpendSgd: undefined }]))[0];
+    expect(unknownCarry.miles).toBe(4);
+    expect(unknownCarry.confidence).toBe("Unverified");
+    expect(unknownCarry.warnings.join(" ")).toContain("component");
+    const fresh = card("dbs-wwmc");
+    const uncertain = record(purchase({ amountSgd: 2.5, mccConfidence: "Unverified" }), fresh, context([fresh]));
+    const following = recommend(purchase({ amountSgd: 2.5 }), context([fresh], { transactions: [uncertain] }))[0];
+    expect(following.miles).toBe(0);
+    expect(following.confidence).toBe("Unverified");
+  });
+  it("keeps DBS settlement transaction month when posting occurs in the next month", () => {
+    const selected = card("dbs-wwmc", { openingPeriodStart: "2026-09-01" });
+    const transaction = record(purchase({ date: "2026-09-30", amountSgd: 100 }), selected, context([selected]));
+    const posted = { ...transaction, postedDate: "2026-10-01" };
+    expect(getCardCapacity(selected, [posted], "2026-09-30").usedSgd).toBe(100);
+    expect(getCardCapacity(selected, [posted], TODAY).usedSgd).toBe(0);
+    expect(posted.reward).toEqual(transaction.reward);
+  });
+  it("accepts leading-zero MCCs while applying DBS bonus-only exclusions", () => {
+    const result = recommend(purchase({ amountSgd: 100, mcc: 763, category: "other" }), context([card("dbs-wwmc")]))[0];
+    expect(result.miles).toBe(40);
+    expect(result.confidence).toBe("Confirmed");
+  });
+  it("matches excluded merchant brand words without unrelated substring matches", () => {
+    for (const templateId of ["uob-ppv", "uob-krisflyer"]) {
+      const selected = templateId === "uob-ppv" ? ppv() : card(templateId);
+      for (const merchant of ["SPC", "SPC@Bedok"]) expect(recommend(mobile({ merchant, mcc: 5541, category: "fuel" }), context([selected])).length).toBe(0);
+      for (const merchant of ["ASPC Consultancy", "Seashell Shop"]) expect(recommend(mobile({ merchant }), context([selected]))).toHaveLength(1);
+    }
+    for (const merchant of ["SPC", "Shell Service Station"]) expect(matchConditions(mobile({ merchant }), { excludedMerchantWords: ["spc", "shell"] }).eligible).toBe(false);
+    for (const merchant of ["ASPC Consultancy", "Seashell Shop"]) expect(matchConditions(mobile({ merchant }), { excludedMerchantWords: ["spc", "shell"] }).eligible).toBe(true);
+  });
+  it("keeps both owners' calendar caps separate from statement-cycle dates", () => {
+    const aleem = ppv({ statementDay: 10, openingCapSpendSgd: { "uob-ppv-online": 590, "uob-ppv-mobile": 0 } });
+    const nurul = ppv({ id: "nurul-ppv", owner: "Nurul", statementDay: 20 });
+    expect(recommend(purchase(), context([aleem, nurul]))[0].card.owner).toBe("Nurul");
+    const spending = record(purchase({ amountSgd: 500 }), nurul, context([aleem, nurul]));
+    expect(getCardCapacities(aleem, [spending], TODAY).find((bucket) => bucket.group === "uob-ppv-online")?.remainingSgd).toBe(10);
+    expect(getCardCapacities(nurul, [spending], TODAY).find((bucket) => bucket.group === "uob-ppv-online")?.remainingSgd).toBe(100);
+    const september = record(purchase({ amountSgd: 500, date: "2026-09-30" }), nurul, context([nurul]), "september");
+    expect(getCardCapacities(nurul, [september], "2026-10-09").find((bucket) => bucket.group === "uob-ppv-online")?.remainingSgd).toBe(600);
+  });
+  it("preserves Maybankv1 evidence and applies v2 grace only to its minimum", () => {
+    const selected = card("maybank-xl");
+    const historic = record(purchase({ date: "2026-10-06", category: "dining", mcc: 5812, amountSgd: 500 }), selected, context([selected]));
+    expect(historic.reward.ruleVersion).toBe(1);
+    const original = JSON.stringify(historic.reward);
+    const current = record(purchase({ date: "2026-10-31", category: "dining", mcc: 5812, amountSgd: 300 }), selected, context([selected]));
+    expect(current.reward.ruleVersion).toBe(2);
+    const withinGrace = { ...current, postedDate: "2026-11-10" };
+    expect(getCardCapacity(selected, [withinGrace], "2026-10-31").usedSgd).toBe(0);
+    expect(getCardCapacity(selected, [withinGrace], "2026-10-31").qualifyingSpendSgd).toBe(300);
+    expect(getCardCapacity(selected, [withinGrace], "2026-11-01").usedSgd).toBe(300);
+    expect(getCardCapacity(selected, [withinGrace], "2026-11-01").qualifyingSpendSgd).toBe(0);
+    const afterGrace = { ...current, postedDate: "2026-11-11" };
+    expect(getCardCapacity(selected, [afterGrace], "2026-10-31").qualifyingSpendSgd).toBe(0);
+    expect(getCardCapacity(selected, [afterGrace], "2026-11-01").qualifyingSpendSgd).toBe(300);
+    expect(JSON.stringify(historic.reward)).toBe(original);
+  });
+  it("uses current KrisFlyer total2.4 accelerator only after actual annual qualification", () => {
+    const selected = card("uob-krisflyer", { annualQualificationStart: "2026-05-01", annualQualificationEnd: "2027-05-01", annualUsageKnown: true, openingAnnualQualifyingSpendSgd: 999 });
+    const request = purchase({ category: "dining", mcc: 5812, amountSgd: 100 });
+    expect(recommend(request, context([selected]))[0].miles).toBe(120);
+    const airline = record(purchase({ category: "travel", mcc: 4511, rewardPartner: "singapore-airlines", amountSgd: 1 }), selected, context([selected]), "airline-qualifier");
+    expect(recommend(request, context([selected], { transactions: [{ ...airline, status: "pending" }] }))[0].miles).toBe(120);
+    const achieved = recommend(request, context([selected], { transactions: [airline] }))[0];
+    expect(achieved.miles).toBe(240);
+    expect(achieved.minimumSpendIncrementalMiles).toBe(0);
+    expect(achieved.warnings.join(" ")).toContain("deferred");
+    expect(getAnnualQualificationProgress(selected, [airline], TODAY)?.qualifyingSpendSgd).toBe(1000);
+  });
+  it("separates KrisFlyer's always3 partners from its qualifying airline subset", () => {
+    const selected = card("uob-krisflyer", { annualQualificationStart: "2026-05-01", annualQualificationEnd: "2027-05-01", annualUsageKnown: true, openingAnnualQualifyingSpendSgd: 0 });
+    const request = purchase({ category: "travel", mcc: 4511, amountSgd: 1000, merchant: "Singapore Airlines" });
+    expect(recommend(request, context([selected]))[0].miles).toBe(1200);
+    for (const rewardPartner of ["singapore-airlines", "scoot", "krisshop", "krisplus", "pelago"] as const) {
+      const transaction = record({ ...request, rewardPartner }, selected, context([selected]), rewardPartner);
+      expect(transaction.reward.miles).toBe(3000);
+      expect(getAnnualQualificationProgress(selected, [transaction], TODAY)?.qualified).toBe(["singapore-airlines", "scoot", "krisshop"].includes(rewardPartner));
+    }
+    const achieved = { ...selected, openingAnnualQualifyingSpendSgd: 1000 };
+    expect(recommend(purchase({ mcc: 5732, amountSgd: 100 }), context([achieved]))[0].miles).toBe(240);
+    expect(recommend(purchase({ mcc: 5734, amountSgd: 100 }), context([achieved]))[0].miles).toBe(120);
+    expect(recommend(purchase({ mcc: 7278, amountSgd: 100, merchant: "Shopee" }), context([achieved]))[0].miles).toBe(240);
+    expect(recommend(purchase({ mcc: 7278, amountSgd: 100, merchant: "Other marketplace" }), context([achieved]))[0].miles).toBe(120);
+  });
+});
+
+describe("confirmed annual qualification", () => {
+  const template: CardTemplate = { id: "annual-fixture", name: "Annual fixture", issuer: "Fixture", accent: "#000000", role: "Fixture", rules: [
+    { id: "annual-base", version: 1, label: "Base", validFrom: "2026-01-01", sourceUrl: "https://www.uob.com.sg/assets/pdfs/kf_credit_card_full_tnc.pdf", lastVerifiedAt: TODAY, verification: "Confirmed", conditions: {}, milesPerDollar: 1.2, cashbackRate: 0, fxFeeRate: 0.0325, rounding: { blockSgd: 5, scope: "transaction" } },
+    { id: "annual-partner", version: 1, label: "Confirmed partner", validFrom: "2026-01-01", sourceUrl: "https://www.uob.com.sg/assets/pdfs/kf_credit_card_full_tnc.pdf", lastVerifiedAt: TODAY, verification: "Confirmed", conditions: { rewardPartners: ["singapore-airlines", "scoot", "krisshop", "krisplus", "pelago"] }, milesPerDollar: 3, cashbackRate: 0, fxFeeRate: 0.0325, rounding: { blockSgd: 5, scope: "transaction" } },
+    { id: "annual-accelerator", version: 1, label: "Conditional dining", validFrom: "2026-01-01", sourceUrl: "https://www.uob.com.sg/assets/pdfs/kf_credit_card_full_tnc.pdf", lastVerifiedAt: TODAY, verification: "Confirmed", conditions: { mccs: [5812] }, milesPerDollar: 2.4, cashbackRate: 0, fxFeeRate: 0.0325, rounding: { blockSgd: 5, scope: "transaction" }, annualQualification: { amountSgd: 1000, conditions: { rewardPartners: ["singapore-airlines", "scoot", "krisshop"] } } },
+  ] };
+  const selected = (override: Partial<OwnedCard> = {}) => card(template.id, { annualQualificationStart: "2026-05-01", annualQualificationEnd: "2027-05-01", annualUsageKnown: true, openingAnnualQualifyingSpendSgd: 0, ...override });
+  const ctx = (owned: OwnedCard, transactions: Transaction[] = []) => context([owned], { templates: [template], transactions });
+  const dining = purchase({ amountSgd: 100, category: "dining", mcc: 5812 });
+  const airline = purchase({ amountSgd: 1000, category: "travel", mcc: 4511, rewardPartner: "singapore-airlines" });
+
+  it("withholds the annual accelerator until posted airline-group spend actually qualifies", () => {
+    const owned = selected();
+    const booked = record(airline, owned, ctx(owned));
+    expect(recommend(dining, ctx(owned))[0].miles).toBe(120);
+    expect(recommend(dining, ctx(owned, [{ ...booked, status: "pending" }]))[0].miles).toBe(120);
+    expect(recommend(dining, ctx(owned, [{ ...booked, status: "reversed" }]))[0].miles).toBe(120);
+    const achieved = recommend(dining, ctx(owned, [booked]))[0];
+    expect(achieved.miles).toBe(240);
+    expect(achieved.warnings.join(" ")).toContain("deferred");
+    expect(getAnnualQualificationProgress(owned, [booked], TODAY, [template])?.qualified).toBe(true);
+  });
+  it("does not qualify through Kris+ or Pelago or an unconfirmed merchant name", () => {
+    const owned = selected();
+    for (const rewardPartner of ["krisplus", "pelago"] as const) {
+      const booked = record({ ...airline, rewardPartner }, owned, ctx(owned));
+      expect(booked.reward.miles).toBe(3000);
+      expect(recommend(dining, ctx(owned, [booked]))[0].miles).toBe(120);
+    }
+    expect(recommend({ ...airline, rewardPartner: undefined, merchant: "Singapore Airlines" }, ctx(owned))[0].miles).toBe(1200);
+  });
+  it("requires a confirmed current year and ignores projected future spend", () => {
+    const owned = selected({ openingAnnualQualifyingSpendSgd: 999 });
+    expect(recommend(dining, { ...ctx(owned), naturalSpendByCard: { [owned.id]: 1000 } })[0].miles).toBe(120);
+    expect(recommend(dining, ctx(selected({ openingAnnualQualifyingSpendSgd: 1000 })))[0].miles).toBe(240);
+    expect(recommend(dining, ctx(selected({ annualUsageKnown: false, openingAnnualQualifyingSpendSgd: 1000 })))[0].miles).toBe(120);
+    expect(recommend({ ...dining, date: "2027-05-01" }, ctx(selected({ openingAnnualQualifyingSpendSgd: 1000 })))[0].miles).toBe(120);
   });
 });
 

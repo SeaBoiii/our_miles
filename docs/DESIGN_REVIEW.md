@@ -80,3 +80,28 @@ The shared placeholder color was refined from 3.20:1 contrast to 5.74:1 against 
 Actual pixels inspected: login at 360 × 800 and 390 × 844, the 390px reduced-height login, empty confirmed-access Home and the offline private gate. Evidence is in `artifacts/pages/verification.json` and the five listed screenshots. Authentication and REST were mocked; this does not claim a live Supabase login, deployed database policy check, physical PWA installation or completed GitHub deployment.
 
 The exported HTML uses a meta CSP with hashes for generated inline hydration scripts. A Zod runtime support probe initially violated that policy; disabling JIT resolved it without permitting inline scripts or eval. Pages does not use the Node-mode security headers. In particular, meta CSP cannot enforce [`frame-ancestors`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/frame-ancestors); that hosting limit remains documented.
+
+## Nurul's cards — rendered follow-up, 7 October 2026
+
+**Verdict:** accepted for the inspected wallet, setup and benefits states. No unresolved blocker or major finding remains. The five-card list preserves the app's calm composition while giving PPV's two independent capacities their own labels and numbers. Lady's separates the app choice from explicit bank confirmation; DBS explains why two opening amounts share one cap. Annual airline qualification and sourced benefits stay behind disclosure controls. Decimal inputs retain their precision, and long card names wrap without colliding with the close control.
+
+**What works:** actionable capacity figures lead the wallet rows; owner labels remain visible; setup fields use comfortable input sizes and clear labels. Conditions, expiry dates and official links accompany benefit details instead of being converted into guaranteed miles or insurance. Maybank's unknown usage now says “Usage not confirmed”. The original mobile resize captures showed browser scaling artifacts; final captures use a fresh context for each viewport, verify the actual viewport width, wait for layout and reset sheet scroll.
+
+**Must fix:** none in the inspected states. **Polish:** long benefit reading could eventually benefit from a persistent close control, and quarter copy could use a friendlier inclusive date range. Both are secondary to correct setup and do not prevent saving or dismissing the current sheets.
+
+| Area | Follow-up score (1–5) |
+| --- | ---: |
+| Task clarity | 4 |
+| Visual hierarchy | 4 |
+| Composition | 4 |
+| Typography | 4 |
+| Mobile usability | 4 |
+| Interaction quality | 4 |
+| Information density | 4 |
+| Accessibility | 4 |
+| Product personality | 4 |
+| Visual polish | 4 |
+
+**Verification:** final `npm run verify:pages` passed against the fake-config static export. Real UI interactions saved PPV opening buckets independently (S$520 online/S$200 mobile), producing 328 miles for a S$100 online purchase, 40 for a recurring online purchase and 400 for an eligible mobile tap. Lady's selected-but-unconfirmed Dining stayed at 40 miles, then explicit bank confirmation enabled 400. DBS saved S$100.25 local/S$150.75 foreign online accumulators, shared S$251 cap usage, and a 20-mile marginal purchase with its local rounding-group snapshot. KrisFlyer's confirmed approval month generated the exact twelve-month period, a qualified 240-mile category estimate and a 300-mile confirmed airline purchase. Recurring status, pending/posting snapshots, conflict handling and owner preservation were also checked.
+
+Fresh-context screenshots cover wallet top/lower and PPV/Lady's/DBS/KrisFlyer setup at 360 × 800, 390 × 844, 412 × 915, 430 × 932 and 1440 × 1000, plus expanded DBS fee benefits at 390px. Actual pixels were inspected across all viewport sizes, especially all four 360px setup sheets, the narrow wallet, 390px detailed benefits, larger-phone wrapping and desktop composition. There was no horizontal overflow. Wallet and all four setup sheets had zero automated WCAG A/AA findings in separate auditor contexts; functional contexts retained strict CSP. The complete run reported zero CSP violations, runtime errors, failed assets or unexpected external/Node API requests. Evidence: `artifacts/pages/verification.json` and 36 screenshots. Supabase Auth/REST are mocked; no live card data, bank enrolment, insurance coverage or deployed Supabase access is claimed.

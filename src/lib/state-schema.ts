@@ -12,6 +12,12 @@ const id = z
 const text = z.string().trim().min(1).max(240);
 const money = z.number().min(0).max(100_000_000);
 const miles = z.number().min(0).max(10_000_000_000);
+const moneyByGroup = z
+  .record(id, money)
+  .refine((value) => Object.keys(value).length <= 100, "Use at most 100 reward groups.");
+const knownByGroup = z
+  .record(id, z.boolean())
+  .refine((value) => Object.keys(value).length <= 100, "Use at most 100 reward groups.");
 const dateOnly = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -61,8 +67,12 @@ const category = z.enum([
   "financial",
 ]);
 const channel = z.enum(["online", "contactless", "in-store"]);
-const method = z.enum(["card", "apple-pay", "google-pay", "mobile-wallet"]);
-const mcc = z.number().int().min(1).max(9999);
+const method = z.enum(["card", "apple-pay", "google-pay", "samsung-pay", "mobile-wallet"]);
+const mcc = z.number().int().min(0).max(9999);
+const rewardCategory = z.enum([
+  "beauty-wellness", "dining", "entertainment", "family", "fashion", "transport", "travel",
+]);
+const rewardPartner = z.enum(["singapore-airlines", "scoot", "krisshop", "krisplus", "pelago"]);
 const conditions = z
   .object({
     categories: z.array(category).max(20).optional(),
@@ -83,6 +93,9 @@ const conditions = z
     excludedPaymentMethods: z.array(method).max(6).optional(),
     merchantIncludes: z.array(text).max(100).optional(),
     excludedMerchantIncludes: z.array(text).max(100).optional(),
+    excludedMerchantWords: z.array(text).max(100).optional(),
+    excludeRecurring: z.boolean().optional(),
+    rewardPartners: z.array(rewardPartner).max(5).optional(),
   })
   .strict();
 
@@ -98,9 +111,31 @@ const ownedCard = z
     openingPeriodStart: dateOnly.optional(),
     openingQualifyingSpendSgd: money.optional(),
     openingLifetimeCashbackSgd: money.optional(),
+    openingCapSpendSgd: moneyByGroup.optional(),
+    capUsageKnown: knownByGroup.optional(),
+    openingRewardSpendSgd: moneyByGroup.optional(),
+    selectedRewardCategory: rewardCategory.optional(),
+    selectedRewardCategoryPeriodStart: dateOnly.optional(),
+    annualQualificationStart: dateOnly.optional(),
+    annualQualificationEnd: dateOnly.optional(),
+    openingAnnualQualifyingSpendSgd: money.optional(),
+    annualUsageKnown: z.boolean().optional(),
     transferFeePerMileSgd: z.number().min(0).max(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const start = value.annualQualificationStart;
+    const end = value.annualQualificationEnd;
+    if (start && end && end <= start)
+      context.addIssue({ code: "custom", path: ["annualQualificationEnd"], message: "The exclusive membership-year end must follow its start." });
+    if (value.annualUsageKnown) {
+      const anniversary = start ? new Date(`${start}T00:00:00Z`) : null;
+      if (anniversary) anniversary.setUTCFullYear(anniversary.getUTCFullYear() + 1);
+      const expectedEnd = anniversary && !Number.isNaN(anniversary.valueOf()) ? anniversary.toISOString().slice(0, 10) : null;
+      if (!start || !end || !start.endsWith("-01") || expectedEnd !== end)
+        context.addIssue({ code: "custom", path: ["annualQualificationEnd"], message: "Confirm the full 12-month membership year, starting on the first of its month." });
+    }
+  });
 
 const reward = z
   .object({
@@ -118,6 +153,8 @@ const reward = z
     minimumSpendIncrementalMiles: miles.optional(),
     bonusSpendSgd: money,
     bonusCapGroup: id.optional(),
+    roundingGroup: id.optional(),
+    bonusRoundingGroup: id.optional(),
     periodStart: dateOnly.optional(),
     periodEnd: dateOnly.optional(),
     qualifyingSpendSgd: money,
@@ -144,6 +181,8 @@ const transaction = z
     mccConfidence: confidence.optional(),
     excluded: z.boolean().optional(),
     processedOverseas: z.boolean().optional(),
+    recurring: z.boolean().optional(),
+    rewardPartner: rewardPartner.optional(),
     postedDate: dateOnly.optional(),
     status: z.enum(["pending", "posted", "reversed"]).optional(),
     reward,

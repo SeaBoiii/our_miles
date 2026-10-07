@@ -1,6 +1,6 @@
 # Card knowledge and calculation boundaries
 
-Last researched: **5 October 2026**. Sources below are official issuer documents. Templates describe products; they do not assert active ownership, balances, eligibility or unused capacity. Aleem's requested templates start unconfirmed (UOB One inactive); Nurul starts with no owned cards. Demo data is separate.
+Last researched: **7 October 2026**. Sources below are official issuer documents. Templates describe products; they do not assert active ownership, balances, eligibility or unused capacity. Aleem's requested templates start unconfirmed (UOB One inactive); Nurul starts with no owned cards. Demo data is separate.
 
 | Template | Implemented basis | Important qualification |
 | --- | --- | --- |
@@ -11,8 +11,14 @@ Last researched: **5 October 2026**. Sources below are official issuer documents
 | Mari Credit Card | 1.5% local cashback; foreign promotion capped at S$1,500/month and S$270 total | Foreign fee waiver; opening lifetime cashback must be known before estimating foreign cashback. Promotion currently ends 31 December 2027. |
 | DBS Esso | Editable template, manual review | Pump-price/grade discounts, Smiles conversion and fuel rebates are excluded from automated ranking. |
 | UOB One | Editable inactive template, manual review | Quarterly tiers need three statement months and transaction counts; excluded from automated ranking. |
+| UOB Lady’s standard | 4 mpd one selected category; S$1,000 calendar cap; 0.4 base | Current-quarter bank selection required. Bonus aggregates monthly separately from transaction-rounded base. No Savings-account boost assumed. Travel MCC mappings stay Likely. |
+| DBS Woman’s World Mastercard | 4 mpd eligible online first S$1,000/calendar; 1.2 foreign / 0.4 local otherwise | Base/foreign points floor separately per transaction; online bonus points floor after monthly accumulation. SGD and foreign online share one gross cap. Merchant settlement month controls usage. |
+| UOB Preferred Visa (PPV) | 4 mpd selected non-recurring online and approved mobile contactless; 0.4 base | Independent S$600 online and S$600 mobile caps from October 2025. Physical taps and generic unconfirmed wallets do not get mobile bonus. SimplyGo accumulates separately monthly but shares mobile capacity. |
+| KrisFlyer UOB Credit | 3 mpd confirmed airline group/Kris+/Pelago; 1.2 base; conditional 2.4 accelerator | Known current membership year and S$1,000 Singapore Airlines/Scoot/KrisShop spend required. Kris+/Pelago do not count. Accelerator miles are deferred; partner names alone are not proof. |
 
 ## Primary sources
+
+The five-card additions include a source-linked benefits catalogue in `src/lib/card-benefits.ts`: earning, cap/minimum conditions, exclusions, annual/FX fees, transfer/expiry rules, travel and merchant benefits, dated promotions and eligibility caveats. [Card setup](CARD_SETUP.md) covers the private fields. Detailed research: [UOB Lady’s and KrisFlyer](research/NURUL_UOB.md), [DBS and Maybank](research/NURUL_DBS_MAYBANK.md), [PPV](research/NURUL_PPV.md). These research notes record uncertain bank wording rather than inventing eligibility. No real wallet state is bundled; a separate local provisioning file adds confirmed ownership.
 
 - **Citi:** [10X programme](https://www.citibank.com.sg/credit-cards/rewards/citi-rewards-card/pdf/10x-rewards-promotion-terms-and-conditions-2020.pdf), [transfer ratios and fees](https://www.citibank.com.sg/credit-cards/privileges-programs/credit-card-rewards-redemption/points-transfer.html), [FX fees](https://www.citibank.com.sg/content/cgcpc/sg/prelogin/www-citibank-com-sg/fees-and-rates.html). Batch transfer fee is S$27.25; the page separately notes a waiver for eligible instant transfers. Current verified rule version starts on the research date; earlier terms were not reconstructed.
 - **HSBC:** [programme effective 1 April 2026](https://www.hsbc.com.sg/content/dam/hsbc/sg/documents/credit-cards/revolution/offers/revolution-credit-card-reward-points-terms-and-conditions.pdf), [partner ratios](https://www.hsbc.com.sg/credit-cards/rewards/), [tariffs](https://www.hsbc.com.sg/content/dam/hsbc/sg/documents/retail-banking-wealth-management-bank-tariffs.pdf). The advertised 4 mpd uses 25,000 points to 10,000 Asia Miles; KrisFlyer uses 30,000 to 10,000. Fees use the conservative 2.25% bank charge plus up to 1% association charge.
@@ -22,6 +28,8 @@ Last researched: **5 October 2026**. Sources below are official issuer documents
 - **Manual templates:** [DBS Esso benefits](https://www.dbs.com.sg/personal/cards/credit-cards/dbs-esso-platinum-card), [UOB One quarterly conditions](https://www.uob.com.sg/personal/cards/cashback/one-card.page). Headline discounts are not equivalent to transaction-level cashback.
 
 ## Engine behaviour
+
+Maybank version 2 starts on this verification date and conservatively assigns cap usage to posting month; the published ten-day grace is explicitly applied only to minimum-spend qualification. Earlier version-1 snapshots and calculations remain intact. PPV and KrisFlyer SPC/Shell exclusions use merchant tokens to avoid rejecting unrelated names such as Seashell or ASPC.
 
 `src/lib/rules.ts` is versioned product knowledge. `engine.ts` is pure; `state.ts` owns personal records. Dates use **Asia/Singapore**, with calendar/statement intervals inclusive at their start and exclusive at their end. A statement day means the confirmed first day of the cycle, not an assumed billing date.
 
@@ -33,4 +41,4 @@ An MCC supplied without confirmed provenance remains **Unverified**. Missing MCC
 
 Welcome value compares attainable tiers with and without the intended purchase plus explicit planned natural spending. Tiers already achievable without it receive no extra value. Unreachable tiers say **Not worth chasing**; pending spend and unconfirmed eligibility never unlock an offer.
 
-Unsupported details remain visible boundaries: promotional cap upgrades, HSBC deposit boosts, refunds crossing issuer periods, merchant-specific exceptions, exact foreign settlement rates, and multi-month UOB qualification need additional verified knowledge/state before automated ranking. No banking credentials are part of this model.
+Unsupported details remain visible boundaries: promotional cap upgrades, HSBC deposit boosts, refunds crossing issuer periods, merchant-specific exceptions, exact foreign settlement rates, and linked-account UOB boosts need additional verified knowledge/state before automated ranking. No banking credentials are part of this model.

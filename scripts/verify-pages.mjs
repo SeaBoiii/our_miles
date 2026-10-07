@@ -182,7 +182,7 @@ async function logout(page) {
   await expect.poll(async () => { const stored = await storageEvidence(page); return stored.localAuth || stored.sessionAuth || stored.localWallet || stored.sessionWallet; }).toBe(false);
 }
 
-async function accessibilityAudit(page, backend) {
+async function accessibilityAudit(page, backend, configure) {
   // Axe injects its auditor as inline code. Audit in a separate CSP-bypassing
   // context; the complete functional context retains and validates CSP.
   const stored = await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } }));
@@ -198,11 +198,193 @@ async function accessibilityAudit(page, backend) {
     await auditPage.goto(page.url());
     if (await page.locator(".app-shell").count()) await expect(auditPage.locator(".app-shell")).toBeVisible();
     else await expect(auditPage.getByLabel("Email", { exact: true })).toBeVisible();
+    if (configure) await configure(auditPage);
     await auditPage.evaluate(() => document.fonts.ready);
     return await new AxeBuilder({ page: auditPage }).withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   } finally {
     await auditContext.close();
   }
+}
+
+async function verifyNurulCards(page, backend, report) {
+  const singaporeDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Singapore", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const month = `${singaporeDate.slice(0, 7)}-01`;
+  const fixtures = ["uob-ladys", "uob-ppv", "uob-krisflyer", "dbs-wwmc", "maybank-xl"].map((templateId) => ({ id: `qa-nurul-${templateId}`, templateId, owner: "Nurul", status: "active", usageKnown: false }));
+  backend.state = { ...backend.state, cards: fixtures, transactions: [], offers: [] };
+  backend.version++;
+  await page.reload();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  const navigation = page.locator("nav:visible");
+  const goWallet = async () => navigation.getByRole("button", { name: "Wallet", exact: true }).click();
+  const openCard = async (name) => {
+    await goWallet();
+    await page.locator(".wallet-row").filter({ hasText: name }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    return page.getByRole("dialog");
+  };
+  const savedCard = (id) => backend.state.cards.find((card) => card.templateId === id);
+  const saveCard = async (dialog) => {
+    await dialog.getByRole("button", { name: "Save card", exact: true }).click();
+    await expect(page.getByRole("dialog")).not.toBeVisible();
+  };
+  const onlyCard = async (templateId) => {
+    backend.state = { ...backend.state, cards: backend.state.cards.map((card) => ({ ...card, status: card.templateId === templateId ? "active" : "inactive" })), transactions: [] };
+    backend.version++;
+    await page.reload();
+    await expect(page.locator(".app-shell")).toBeVisible();
+    await navigation.getByRole("button", { name: "What Card?", exact: true }).click();
+  };
+  const details = async () => {
+    const summary = page.locator("summary").filter({ hasText: "Currency, wallet & merchant details" });
+    const open = await summary.evaluate((node) => node.parentElement.open);
+    if (!open) await summary.click();
+  };
+  const purchase = async ({ amount = "100", mcc = "5732", category = "shopping", channel = "online", recurring = false, method = "card", partner = "" } = {}) => {
+    await page.getByLabel("Purchase amount in Singapore dollars", { exact: true }).fill(amount);
+    await page.getByRole("textbox", { name: /^Merchant optional/ }).fill("Nurul QA intended purchase");
+    await page.locator(".channel-field").getByRole("button", { name: channel === "online" ? "Online" : "Contactless", exact: true }).click();
+    await details();
+    await page.getByLabel(/^Specific purchase category/).selectOption(category);
+    await page.getByLabel("Merchant category code (MCC)", { exact: true }).fill(mcc);
+    await page.getByLabel("Confirmed from the issuer or a posted transaction", { exact: true }).check();
+    await page.getByLabel(/^Payment method/).selectOption(method);
+    await page.getByLabel("Recurring payment / subscription", { exact: true }).setChecked(recurring);
+    await page.getByLabel(/^Confirmed KrisFlyer UOB partner payment/).selectOption(partner);
+    if (await page.getByRole("button", { name: "See our best card", exact: true }).isVisible()) await page.getByRole("button", { name: "See our best card", exact: true }).click();
+    return page.getByRole("region", { name: "Card recommendation" });
+  };
+
+  await goWallet();
+  await expect(page.locator(".wallet-row")).toHaveCount(5);
+  let dialog = await openCard("Preferred Visa");
+  await dialog.getByLabel("Online usage checked", { exact: true }).check();
+  await dialog.getByLabel("Online opening spend (S$)", { exact: true }).fill("520");
+  await dialog.getByLabel("Mobile contactless usage checked", { exact: true }).check();
+  await dialog.getByLabel("Mobile contactless opening spend (S$)", { exact: true }).fill("200");
+  await saveCard(dialog);
+  assert.deepEqual(savedCard("uob-ppv").openingCapSpendSgd, { "uob-ppv-online": 520, "uob-ppv-mobile": 200 });
+  assert.deepEqual(savedCard("uob-ppv").capUsageKnown, { "uob-ppv-online": true, "uob-ppv-mobile": true });
+
+  dialog = await openCard("Lady");
+  await dialog.getByLabel(/^Category registered with UOB/).selectOption("dining");
+  await dialog.getByLabel(/I have checked this period/).check();
+  await dialog.getByLabel(/Bonus-eligible spend before our app records/).fill("0");
+  await saveCard(dialog);
+  assert.equal(savedCard("uob-ladys").selectedRewardCategory, "dining");
+  assert.equal(savedCard("uob-ladys").selectedRewardCategoryPeriodStart, undefined, "A selection alone must not assert bank registration.");
+  await onlyCard("uob-ladys");
+  await expect(await purchase({ category: "dining", mcc: "5812" })).toContainText("40 miles");
+  dialog = await openCard("Lady");
+  await dialog.getByLabel(/UOB confirms this category/).check();
+  await saveCard(dialog);
+  assert.match(savedCard("uob-ladys").selectedRewardCategoryPeriodStart, /^\d{4}-\d{2}-01$/);
+  await navigation.getByRole("button", { name: "What Card?", exact: true }).click();
+  await expect(await purchase({ category: "dining", mcc: "5812" })).toContainText("400 miles");
+  report.checks.ladyCategory = "unconfirmed selection stays base; explicit bank confirmation enables selected-category bonus";
+
+  await onlyCard("dbs-wwmc");
+  dialog = await openCard("Woman");
+  await dialog.getByLabel(/I have checked this period/).check();
+  await dialog.getByLabel("SGD online spend before our records (S$)", { exact: true }).fill("100.25");
+  await dialog.getByLabel("Foreign-currency online spend before our records (S$)", { exact: true }).fill("150.75");
+  await saveCard(dialog);
+  assert.deepEqual(savedCard("dbs-wwmc").openingRewardSpendSgd, { "dbs-wwmc-online-local": 100.25, "dbs-wwmc-online-foreign": 150.75 });
+  assert.equal(savedCard("dbs-wwmc").openingSpendSgd, 251);
+  assert.equal(savedCard("dbs-wwmc").openingPeriodStart, month);
+  await navigation.getByRole("button", { name: "What Card?", exact: true }).click();
+  await expect(await purchase({ amount: "5.10" })).toContainText("20 miles");
+  await page.getByRole("button", { name: "Record this purchase", exact: true }).click();
+  assert.equal(backend.state.transactions.at(-1).reward.miles, 20);
+  assert.equal(backend.state.transactions.at(-1).reward.bonusRoundingGroup, "dbs-wwmc-online-local");
+  report.checks.dbsSplit = "local/foreign opening accumulators save separately, share gross cap, and preserve marginal monthly rounding group";
+
+  await onlyCard("uob-krisflyer");
+  dialog = await openCard("KrisFlyer UOB");
+  await dialog.locator("summary").filter({ hasText: "Annual airline qualification" }).click();
+  await dialog.getByLabel(/^Current membership year starts/).fill(month.slice(0,7));
+  await dialog.getByLabel("Airline-group spend before our records (S$)", { exact: true }).fill("1000");
+  await dialog.getByLabel("I have checked this membership year and its qualifying spend", { exact: true }).check();
+  await saveCard(dialog);
+  const annual = savedCard("uob-krisflyer");
+  assert.equal(annual.annualQualificationStart, month);
+  assert.equal(annual.annualQualificationEnd, `${Number(month.slice(0,4))+1}${month.slice(4)}`);
+  assert.equal(annual.annualUsageKnown, true);
+  await navigation.getByRole("button", { name: "What Card?", exact: true }).click();
+  await expect(await purchase({ category: "dining", mcc: "5812" })).toContainText("240 miles");
+  await expect(await purchase({ category: "travel", mcc: "4511", partner: "singapore-airlines" })).toContainText("300 miles");
+  report.checks.krisAnnualPartner = "approval month defines exact 12-month year; confirmed annual spend enables deferred accelerator; confirmed airline path enables 3mpd";
+
+  await onlyCard("uob-ppv");
+  await expect(await purchase()).toContainText("328 miles");
+  await expect(await purchase({ recurring: true })).toContainText("40 miles");
+  await page.getByRole("button", { name: "Record this purchase", exact: true }).click();
+  assert.equal(backend.state.transactions.at(-1).recurring, true);
+  assert.equal(backend.state.transactions.at(-1).reward.miles, 40);
+  await navigation.getByRole("button", { name: "What Card?", exact: true }).click();
+  await expect(await purchase({ channel: "contactless", method: "apple-pay" })).toContainText("400 miles");
+  report.checks.ppvBucketsRecurring = "independent saved caps affect blended online earn; recurring excludes online bonus and survives recording; mobile tap uses its separate capacity";
+
+  backend.state = { ...backend.state, cards: backend.state.cards.map((card) => ({ ...card, status: "active" })), transactions: [] };
+  backend.version++;
+  await page.reload();
+  await expect(page.locator(".app-shell")).toBeVisible();
+  for (const label of [null,"Preferred Visa","Lady","Woman","KrisFlyer UOB"]) {
+    const audit = await accessibilityAudit(page,backend,async auditor=>{
+      await auditor.locator("nav:visible").getByRole("button",{name:"Wallet",exact:true}).click();
+      if (label) {
+        await auditor.locator(".wallet-row").filter({hasText:label}).click();
+        await expect(auditor.getByRole("dialog")).toBeVisible();
+        if (label==="KrisFlyer UOB") await auditor.getByRole("dialog").locator("summary").filter({hasText:"Annual airline qualification"}).click();
+      }
+    });
+    assert.equal(audit.violations.length,0,`${label??"Wallet"} accessibility violations: ${audit.violations.map(violation=>violation.id).join(", ")}`);
+  }
+  report.checks.nurulAccessibility = "wallet and PPV/Lady’s/DBS/KrisFlyer setup sheets have zero WCAG A/AA axe violations in separate auditor contexts";
+  // Fresh contexts avoid a mobile layout viewport retaining desktop zoom/scroll
+  // after resizing an already focused, open dialog.
+  for (const [width,height] of [[360,800],[390,844],[412,915],[430,932],[1440,1000]]) {
+    const visualContext = await browser.newContext({viewport:{width,height},isMobile:width<900,hasTouch:width<900,deviceScaleFactor:1,reducedMotion:"reduce",serviceWorkers:"block",timezoneId:"Asia/Singapore"});
+    try {
+      await mockSupabase(visualContext, backend);
+      const visual = await visualContext.newPage();
+      await visual.goto(appUrl);
+      await signIn(visual, {remember:false});
+      await expect(visual.locator(".app-shell")).toBeVisible();
+      await visual.locator("nav:visible").getByRole("button", {name:"Wallet",exact:true}).click();
+      const capture = async (name) => {
+        await visual.evaluate(async () => { await document.fonts.ready; await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))); });
+        await expect.poll(()=>visual.evaluate(()=>innerWidth)).toBe(width);
+        assert(await visual.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`Horizontal page overflow: ${name} ${width}px`);
+        const visibleDialog = visual.getByRole("dialog");
+        if (await visibleDialog.count()) assert(await visibleDialog.evaluate(node=>node.scrollWidth<=node.clientWidth+1),`Horizontal sheet overflow: ${name} ${width}px`);
+        const file = `nurul-${name}-${width}.png`;
+        await visual.screenshot({path:path.join(artifacts,file),fullPage:false});
+        report.screenshots.push(`artifacts/pages/${file}`);
+      };
+      await visual.evaluate(()=>window.scrollTo(0,0));
+      await capture("wallet");
+      await visual.locator(".wallet-row").nth(2).scrollIntoViewIfNeeded();
+      await capture("wallet-lower");
+      for (const [name,label] of [["ppv-setup","Preferred Visa"],["lady-setup","Lady"],["dbs-setup","Woman"],["kris-setup","KrisFlyer UOB"]]) {
+        await visual.locator(".wallet-row").filter({hasText:label}).click();
+        const visualDialog = visual.getByRole("dialog");
+        await expect(visualDialog).toBeVisible();
+        if (name==="kris-setup") await visualDialog.locator("summary").filter({hasText:"Annual airline qualification"}).click();
+        await visual.evaluate(()=>{document.activeElement?.blur();document.querySelector(".sheet-body")?.scrollTo(0,0);document.querySelector(".sheet-content")?.scrollTo(0,0);});
+        await capture(name);
+        if (name==="dbs-setup" && width===390) {
+          await visualDialog.locator("summary").filter({hasText:"Benefits & things to know"}).click();
+          await visualDialog.locator("summary").filter({hasText:"Fees & waivers"}).click();
+          await visualDialog.getByText("Annual fee and revised waiver",{exact:true}).scrollIntoViewIfNeeded();
+          await capture("dbs-benefits");
+          await expect(visualDialog.getByRole("link",{name:"Woman’s World benefits",exact:true}).first()).toHaveAttribute("href","https://www.dbs.com.sg/personal/cards/credit-cards/dbs-woman-mastercard-card");
+        }
+        await visual.keyboard.press("Escape");
+        await expect(visual.getByRole("dialog")).not.toBeVisible();
+      }
+    } finally { await visualContext.close(); }
+  }
+  report.checks.nurulResponsive = "fresh-context five-card wallet and four sheets at 360/390/412/430/1440; exact viewport width, no horizontal overflow, source links rendered";
 }
 
 const report = { authentication: "mocked Supabase Auth/REST only; live project not accessed", checks: {}, screenshots: [] };
@@ -369,6 +551,8 @@ try {
   assert.deepEqual(backend.state.transactions[0].reward, recorded.reward, "Posting rewrote the original reward evidence.");
   assert.equal(backend.state.cards.find((card) => card.id === recorded.cardId).owner, "Nurul");
   report.checks.ownerPendingSnapshot = "Nurul ownership preserved; pending reserves cap; posting preserves snapshot";
+
+  await verifyNurulCards(page, backend, report);
 
   await page.evaluate(async () => { await navigator.serviceWorker.ready; });
   await page.reload();

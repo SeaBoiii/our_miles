@@ -17,7 +17,7 @@ Open http://localhost:3000. With no private configuration, the app explicitly op
 
 The recommended deployment is a static GitHub Pages app with **two invited Supabase Auth accounts** and a database protected by row-level security. The Pages build has no Node API routes or shared PIN. Its public URL and publishable key grant no access to private wallet data.
 
-Follow the [GitHub Pages and secure Supabase setup guide](docs/HOSTING.md): create the project and two users, apply both SQL migrations, allowlist their user IDs, add the two public repository variables, and select **GitHub Actions** in Pages settings. The included [deployment workflow](.github/workflows/pages.yml) builds and publishes `out/`.
+Follow the [GitHub Pages and secure Supabase setup guide](docs/HOSTING.md): create the project and two users, apply all three SQL migrations, allowlist their user IDs, add the two public repository variables, and select **GitHub Actions** in Pages settings. The included [deployment workflow](.github/workflows/pages.yml) builds and publishes `out/`.
 
 ```powershell
 $env:NEXT_PUBLIC_SUPABASE_URL = 'https://YOUR_PROJECT.supabase.co'

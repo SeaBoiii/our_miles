@@ -14,16 +14,17 @@ In **Authentication → Users**, use **Add user → Create new user** to create 
 
 In **Authentication → URL Configuration**, set the Site URL to the final address, for example `https://YOUR_GITHUB_USERNAME.github.io/our_miles/`. This app uses password sign-in and does not implement signup, magic-link or password-recovery callback screens. Account creation and password recovery are administrator tasks; see recovery below. Supabase's [user guide](https://supabase.com/docs/guides/auth/users) explains Auth users and their identities.
 
-## 2. Apply both database migrations
+## 2. Apply the database migrations
 
 In the project's **SQL Editor**, run the complete contents of these files, in order:
 
 1. [202610050001_private_wallet.sql](../supabase/migrations/202610050001_private_wallet.sql)
 2. [202610050002_browser_auth.sql](../supabase/migrations/202610050002_browser_auth.sql)
+3. [202610070001_card_preferences.sql](../supabase/migrations/202610070001_card_preferences.sql)
 
-The first creates the singleton wallet and original server adapter. The second adds restricted browser access and database validation while preserving server-role access. The second migration is transactional and rejects an existing wallet that fails the closed state schema. Neither migration creates users, seeds private financial data or adds members.
+The first creates the singleton wallet and original server adapter. The second adds restricted browser access and database validation while preserving server-role access. The third adds validated card preferences, separate cap buckets and annual qualification fields. The migrations do not create users, seed private financial data or add members. See [card setup](CARD_SETUP.md) after signing in.
 
-Do not reapply the first migration after the second: it reinstates the original server-only function permissions. A new project needs both migrations in order; an existing project that already applied the first needs only the second.
+Do not reapply the first migration after the second: it reinstates the original server-only function permissions. A new project needs all three in order; an existing project needs only the migrations it has not applied.
 
 ## 3. Allowlist Aleem and Nurul
 
@@ -87,7 +88,7 @@ npm test
 npm run verify:supabase
 ```
 
-`verify:supabase` applies both real SQL migrations to isolated PostgreSQL through the development-only PGlite dependency. It stubs Supabase's trusted JWT functions and roles, then checks anonymous/outsider denial, two-owner constraints, own-row membership, shared reads, RPC-only client writes, optimistic versions, JSON validation, recorded evidence immutability across multiple saves and original service-role access. It uses no project, secrets or real wallet. This verifies SQL behavior; it does not test Supabase's live Auth server or HTTP gateway.
+`verify:supabase` applies all three real SQL migrations to isolated PostgreSQL through the development-only PGlite dependency. It stubs Supabase's trusted JWT functions and roles, then checks anonymous/outsider denial, two-owner constraints, own-row membership, shared reads, RPC-only client writes, optimistic versions, JSON validation, recorded evidence immutability across multiple saves and original service-role access. It uses no project, secrets or real wallet. This verifies SQL behavior; it does not test Supabase's live Auth server or HTTP gateway.
 
 For a reproducible static export browser check, use these mock settings in a new PowerShell session:
 

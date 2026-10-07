@@ -20,8 +20,11 @@ export type PaymentMethod =
   | "card"
   | "apple-pay"
   | "google-pay"
+  | "samsung-pay"
   | "mobile-wallet";
 export type PeriodKind = "calendar-month" | "statement-month";
+export type RewardCategory = "beauty-wellness" | "dining" | "entertainment" | "family" | "fashion" | "transport" | "travel";
+export type RewardPartner = "singapore-airlines" | "scoot" | "krisshop" | "krisplus" | "pelago";
 
 export interface RuleConditions {
   categories?: Category[];
@@ -36,6 +39,9 @@ export interface RuleConditions {
   excludedPaymentMethods?: PaymentMethod[];
   merchantIncludes?: string[];
   excludedMerchantIncludes?: string[];
+  excludedMerchantWords?: string[];
+  excludeRecurring?: boolean;
+  rewardPartners?: RewardPartner[];
 }
 
 export interface CardRule {
@@ -57,9 +63,20 @@ export interface CardRule {
     spendSgd: number;
     period: PeriodKind;
     lifetimeCashbackSgd?: number;
+    /** Some issuers cap gross charged spend rather than bank-rounded earn blocks. */
+    usageRounding?: "raw" | "earn";
+    label?: string;
   };
-  minimumSpend?: { amountSgd: number; period: PeriodKind };
-  rounding?: { blockSgd: number; scope: "transaction" | "period" };
+  minimumSpend?: { amountSgd: number; period: PeriodKind; postingGraceDays?: number };
+  rounding?: { blockSgd: number; scope: "transaction" | "period"; group?: string };
+  /** Independently floored transaction components, e.g. DBS base and foreign points. */
+  baseComponents?: { milesPerDollar: number; roundingUnitMiles: number }[];
+  /** Floor bonus points after applying the multiplier, independently of base earn. */
+  bonusRounding?: { unitMiles: number; scope: "transaction" | "period"; group?: string };
+  selectedCategory?: RewardCategory;
+  annualQualification?: { amountSgd: number; conditions: RuleConditions };
+  /** DBS uses settlement transaction month; other cards default to posting date. */
+  periodDate?: "transaction" | "posting";
   transferFeeSgd?: number;
   transferBlockMiles?: number;
   notes?: string[];
@@ -92,6 +109,18 @@ export interface OwnedCard {
   /** User-confirmed transfer fee allocation. Undefined means no allocation assumed. */
   transferFeePerMileSgd?: number;
   openingLifetimeCashbackSgd?: number;
+  /** Separate confirmed opening usage for independent bonus buckets. */
+  openingCapSpendSgd?: Record<string, number>;
+  capUsageKnown?: Record<string, boolean>;
+  /** Gross opening spend for independently aggregated reward components. */
+  openingRewardSpendSgd?: Record<string, number>;
+  selectedRewardCategory?: RewardCategory;
+  selectedRewardCategoryPeriodStart?: string;
+  annualQualificationStart?: string;
+  /** Exclusive first day of the next confirmed membership year. */
+  annualQualificationEnd?: string;
+  openingAnnualQualifyingSpendSgd?: number;
+  annualUsageKnown?: boolean;
 }
 
 export interface Purchase {
@@ -109,6 +138,9 @@ export interface Purchase {
   excluded?: boolean;
   /** The amount is an SGD equivalent, not a live foreign-exchange quote. */
   processedOverseas?: boolean;
+  recurring?: boolean;
+  /** Explicitly confirmed partner; merchant text is not proof of partner eligibility. */
+  rewardPartner?: RewardPartner;
 }
 
 export interface RewardSnapshot {
@@ -126,6 +158,8 @@ export interface RewardSnapshot {
   /** Gross bonus-eligible spend reserved, before caps and bank rounding. */
   bonusSpendSgd: number;
   bonusCapGroup?: string;
+  roundingGroup?: string;
+  bonusRoundingGroup?: string;
   periodStart?: string;
   periodEnd?: string;
   qualifyingSpendSgd: number;
@@ -174,6 +208,8 @@ export interface RecommendationContext {
 }
 
 export interface CardCapacity {
+  group?: string;
+  label?: string;
   remainingSgd: number | null;
   usedSgd: number;
   capSgd: number | null;
@@ -184,6 +220,16 @@ export interface CardCapacity {
   minimumSpendSgd: number | null;
   qualifyingSpendSgd: number;
   minimumSpendRemainingSgd: number;
+}
+
+export interface AnnualQualificationProgress {
+  known: boolean;
+  qualified: boolean;
+  qualifyingSpendSgd: number;
+  requiredSpendSgd: number;
+  remainingSgd: number;
+  periodStart: string | null;
+  periodEnd: string | null;
 }
 
 export interface Recommendation {

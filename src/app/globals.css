@@ -2267,3 +2267,20 @@ summary::-webkit-details-marker {
     scroll-behavior: auto !important;
   }
 }
+/* Card knowledge is disclosed on demand; confirmed usage stays prominent. */
+.wallet-buckets { display: grid; gap: 16px; padding: 20px 0 12px; }
+.wallet-buckets > div { display: grid; gap: 7px; }
+.wallet-buckets > div > span { font-size: 12px; color: var(--muted); }
+.wallet-buckets strong { font-size: 17px; font-variant-numeric: tabular-nums; }
+.setup-section { display: grid; gap: 14px; padding: 8px 0; }
+.setup-section h3 { font-size: 19px; margin: 0; }
+.bucket-field { display: grid; gap: 12px; }
+.benefit-section { border-top: 1px solid var(--line); }
+.benefit-section > summary { min-height: 48px; display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; font-weight: 600; }
+.benefit-section[open] > summary svg { transform: rotate(90deg); }
+.benefit-item { padding: 6px 0 18px; font-size: 14px; line-height: 1.55; }
+.benefit-item strong { display: block; font-size: 15px; }
+.benefit-item p { margin: 7px 0; }
+.benefit-status { font-size: 12px; color: var(--muted); }
+.benefit-sources { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.benefit-sources a { display: inline-flex; align-items: center; gap: 4px; min-height: 44px; font-size: 12px; text-decoration: underline; }

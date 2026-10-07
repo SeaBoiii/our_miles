@@ -5,6 +5,7 @@ import type {
   OwnedCard,
   RuleConditions,
 } from "./domain";
+import { ADDITIONAL_CARD_TEMPLATES } from "./additional-card-rules";
 
 const VERIFIED = "2026-10-05";
 const standardExcludedCategories: Category[] = [
@@ -400,7 +401,25 @@ export const CARD_TEMPLATES: CardTemplate[] = [
     manualReview:
       "Quarterly cashback needs three statement months, tier spend and transaction counts. Excluded from automated ranking until those conditions can be represented accurately.",
   },
+  ...ADDITIONAL_CARD_TEMPLATES,
 ];
+
+// Corrected knowledge is appended; existing transaction evidence retains version 1.
+const maybank = CARD_TEMPLATES.find((template) => template.id === "maybank-xl")!;
+maybank.rules.push(...maybank.rules.map((existing) => ({
+  ...existing,
+  version: 2,
+  validFrom: "2026-10-07",
+  lastVerifiedAt: "2026-10-07",
+  periodDate: "posting" as const,
+  ...(existing.minimumSpend ? {minimumSpend: {...existing.minimumSpend, postingGraceDays: 10}} : {}),
+  conditions: existing.id.includes("-local-")
+    ? {...existing.conditions, categories: ["dining", "shopping", "travel", "other"] as Category[]}
+    : existing.conditions,
+  transferFeeSgd: 27.25,
+  transferBlockMiles: 10000,
+  notes: [...(existing.notes ?? []), "10,000 total 10X TREATS corresponds to S$1,000 rounded eligible spend. Local online purchases need an eligible MCC; online alone is insufficient. Etiqa insurance base points require a manual check and do not qualify for the monthly minimum."],
+})));
 
 export function getTemplate(
   id: string,
@@ -411,7 +430,8 @@ export function getTemplate(
 
 /** Templates are intentions to review, never claims that cards or balances are active. */
 export function initialCards(): OwnedCard[] {
-  return CARD_TEMPLATES.map((template) => ({
+  const legacyIntentions = ["maybank-xl", "citi-rewards", "hsbc-revolution", "trust-freedom", "dbs-esso", "mari", "uob-one"];
+  return CARD_TEMPLATES.filter((template) => legacyIntentions.includes(template.id)).map((template) => ({
     id: `aleem-${template.id}`,
     templateId: template.id,
     owner: "Aleem",

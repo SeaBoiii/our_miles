@@ -8,10 +8,12 @@ import {
   Check,
   Info,
 } from "lucide-react";
-import type { OwnedCard, Owner } from "@/lib/domain";
+import type { OwnedCard, Owner, RewardCategory } from "@/lib/domain";
 import { CARD_TEMPLATES, getTemplate } from "@/lib/rules";
-import { getCardCapacity } from "@/lib/engine";
-import { getPeriod } from "@/lib/periods";
+import { getCardCapacity, getCardCapacities, getAnnualQualificationProgress } from "@/lib/engine";
+import { getPeriod, getCalendarQuarter } from "@/lib/periods";
+import { REWARD_CATEGORIES } from "@/lib/additional-card-rules";
+import { getCardBenefits } from "@/lib/card-benefits";
 import { formatDate, formatMoney, makeId, today } from "@/lib/state";
 import { Sheet, Progress, SectionHeading } from "./primitives";
 import type { Store, View } from "./miles-app";
@@ -182,6 +184,9 @@ function WalletRow({
 }) {
   const template = getTemplate(card.templateId)!;
   const cap = getCardCapacity(card, store.state!.transactions, today());
+  const caps = getCardCapacities(card, store.state!.transactions, today());
+  const annual = getAnnualQualificationProgress(card, store.state!.transactions, today());
+  const needsCategory = template.rules.some(r=>r.selectedCategory) && (!card.selectedRewardCategory || card.selectedRewardCategoryPeriodStart !== getCalendarQuarter(today()).start);
   const rewardLabel =
     cap.milesPerDollar > 0
       ? `at ${cap.milesPerDollar % 1 ? cap.milesPerDollar.toFixed(2) : cap.milesPerDollar} mpd`
@@ -216,25 +221,28 @@ function WalletRow({
         </div>
         <ChevronRight size={17} />
       </div>
-      <div className="wallet-capacity">
+      {caps.length > 1 ? <div className="wallet-buckets">{caps.map(bucket => <div key={bucket.group}>
+        <span>{bucket.label}</span><strong>{bucket.remainingSgd === null ? "Confirm usage" : `${formatMoney(bucket.remainingSgd)} left at ${bucket.milesPerDollar} mpd`}</strong>
+        <Progress value={bucket.remainingSgd === null ? 0 : bucket.usedSgd / bucket.capSgd! * 100} label={`${bucket.label} bonus spend used`} />
+      </div>)}</div> : <div className="wallet-capacity">
         <strong>
-          {cap.capSgd !== null
+          {needsCategory ? "Choose bonus category" : cap.capSgd !== null
             ? remaining === null
               ? "Confirm usage"
               : `${formatMoney(remaining)} left`
             : template.manualReview
               ? "Check issuer terms"
-              : "Everyday rewards"}
+              : annual ? "3 mpd with partners" : "Everyday rewards"}
         </strong>
         <span>
-          {cap.capSgd !== null && remaining !== null
-            ? rewardLabel
+          {needsCategory ? "0.4 mpd until confirmed" : cap.capSgd !== null
+            ? remaining === null ? "Usage not confirmed" : rewardLabel
             : template.manualReview
               ? "Manual review"
-              : "No tracked bonus cap"}
+              : annual ? annual.qualified ? "2.4 mpd eligible categories" : "1.2 mpd elsewhere" : "No tracked bonus cap"}
         </span>
-      </div>
-      {cap.capSgd !== null && (
+      </div>}
+      {caps.length <= 1 && cap.capSgd !== null && !needsCategory && (
         <Progress
           value={remaining === null ? 0 : (cap.usedSgd / cap.capSgd) * 100}
           label={`${template.name} bonus spend used`}
@@ -245,18 +253,18 @@ function WalletRow({
       )}
       <div className="wallet-row-footer">
         <span>
-          {cap.minimumSpendRemainingSgd > 0
+          {needsCategory ? "Select with UOB first" : cap.minimumSpendRemainingSgd > 0 && remaining !== null
             ? `${formatMoney(cap.minimumSpendRemainingSgd)} to minimum spend`
             : cap.capSgd !== null
               ? status
-              : "Active"}
+              : annual ? annual.qualified ? "Accelerator miles deferred" : annual.known ? `${formatMoney(annual.qualifyingSpendSgd)} of S$1,000 annual qualifier` : "Annual qualification needs checking" : "Active"}
         </span>
         <span>
           {cap.periodEnd
             ? `Resets ${formatDate(cap.periodEnd)}`
             : card.statementDay
               ? "Statement cycle"
-              : "No statement date"}
+              : "No monthly cap"}
         </span>
       </div>
     </button>
@@ -273,16 +281,33 @@ function CardEditor({
 }) {
   const template = getTemplate(card.templateId)!;
   const capacity = getCardCapacity(card, store.state!.transactions, today());
+  const capacities = getCardCapacities(card, store.state!.transactions, today());
+  const benefits = getCardBenefits(card.templateId, today());
+  const currentOpeningPeriod = getPeriod(today(), capacity.period ?? "calendar-month", card.statementDay);
+  const openingIsCurrent = card.openingPeriodStart === currentOpeningPeriod?.start;
   const [owner, setOwner] = useState(card.owner);
   const [status, setStatus] = useState(card.status);
   const [day, setDay] = useState(
     card.statementDay ? String(card.statementDay) : "",
   );
   const [known, setKnown] = useState(card.usageKnown);
-  const [spend, setSpend] = useState(String(card.openingSpendSgd ?? 0));
+  const [spend, setSpend] = useState(String(openingIsCurrent ? card.openingSpendSgd ?? 0 : 0));
   const [qualifying, setQualifying] = useState(
-    String(card.openingQualifyingSpendSgd ?? 0),
+    String(openingIsCurrent ? card.openingQualifyingSpendSgd ?? 0 : 0),
   );
+  const [bucketSpend, setBucketSpend] = useState<Record<string, number>>(openingIsCurrent ? card.openingCapSpendSgd ?? {} : {});
+  const [bucketKnown, setBucketKnown] = useState<Record<string, boolean>>(card.capUsageKnown ?? {});
+  const [rewardSpend, setRewardSpend] = useState<Record<string, number>>(openingIsCurrent ? card.openingRewardSpendSgd ?? {} : {});
+  const [rewardCategory, setRewardCategory] = useState<RewardCategory | "">(card.selectedRewardCategory ?? "");
+  const quarter = getCalendarQuarter(today());
+  const [categoryConfirmed, setCategoryConfirmed] = useState(!!card.selectedRewardCategory && card.selectedRewardCategoryPeriodStart === quarter.start);
+  const [annualStart, setAnnualStart] = useState(card.annualQualificationStart?.slice(0,7) ?? "");
+  const [annualSpend, setAnnualSpend] = useState(String(card.openingAnnualQualifyingSpendSgd ?? 0));
+  const [annualKnown, setAnnualKnown] = useState(card.annualUsageKnown ?? false);
+  const hasSelectedCategory = template.rules.some(r=>r.selectedCategory);
+  const hasAnnual = template.rules.some(r=>r.annualQualification);
+  const rewardGroups = [...new Set(template.rules.map(r=>r.bonusRounding?.group).filter((group): group is string=>!!group))];
+  const splitRewards = rewardGroups.length > 1;
   const [transfer, setTransfer] = useState(
     String((card.transferFeePerMileSgd ?? 0) * 1000),
   );
@@ -316,6 +341,10 @@ function CardEditor({
           openingLifetimeCashbackSgd: lifetime ? Number(lifetime) : undefined,
           openingPeriodStart: period?.start,
           transferFeePerMileSgd: Number(transfer) / 1000,
+          ...(capacities.length > 1 ? {openingCapSpendSgd: bucketSpend, capUsageKnown: bucketKnown} : {}),
+          ...(splitRewards ? {openingRewardSpendSgd: rewardSpend, openingSpendSgd: Object.values(rewardSpend).reduce((a,b)=>a+b,0)} : {}),
+          ...(hasSelectedCategory ? {selectedRewardCategory: rewardCategory || undefined, selectedRewardCategoryPeriodStart: categoryConfirmed && rewardCategory ? quarter.start : undefined} : {}),
+          ...(hasAnnual ? {annualQualificationStart: annualStart ? `${annualStart}-01` : undefined, annualQualificationEnd: annualStart ? `${Number(annualStart.slice(0,4))+1}${annualStart.slice(4)}-01` : undefined, openingAnnualQualifyingSpendSgd: Number(annualSpend), annualUsageKnown: annualKnown} : {}),
         };
         if (
           await store.update((s) => ({
@@ -354,6 +383,24 @@ function CardEditor({
           </select>
         </label>
       </div>
+      {hasSelectedCategory && <section className="setup-section">
+        <h3>Your bonus category</h3>
+        <label className="form-label">Category registered with UOB
+          <select value={rewardCategory} onChange={e=>{setRewardCategory(e.target.value as RewardCategory | "");setCategoryConfirmed(false);}}>
+            <option value="">Choose when ready</option>{REWARD_CATEGORIES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+        </label>
+        {rewardCategory && <label className="check-label"><input type="checkbox" checked={categoryConfirmed} onChange={e=>setCategoryConfirmed(e.target.checked)} />UOB confirms this category for {formatDate(quarter.start)} to {formatDate(quarter.end)} (end excluded)</label>}
+        <p className="muted small">Select and register with <a href="https://www.uob.com.sg/ladys-enrol" target="_blank" rel="noreferrer">UOB</a> first. Later changes take effect next calendar quarter. Until confirmed here, recommendations use 0.4 mpd.</p>
+      </section>}
+      {hasAnnual && <details className="purchase-details"><summary>Annual airline qualification<ChevronRight size={15} /></summary>
+        <div className="advanced-form">
+          <label className="form-label">Current membership year starts<input type="month" value={annualStart} onChange={e=>{setAnnualStart(e.target.value);setAnnualKnown(false);}} required={annualKnown} /><span className="muted small">Use the approval month. The year ends before the same month next year.</span></label>
+          <label className="form-label">Airline-group spend before our records (S$)<input type="number" min="0" max="1000000" step="0.01" value={annualSpend} onChange={e=>setAnnualSpend(e.target.value)} required={annualKnown} /></label>
+          <label className="check-label"><input type="checkbox" checked={annualKnown} onChange={e=>setAnnualKnown(e.target.checked)} />I have checked this membership year and its qualifying spend</label>
+          <p className="muted small">S$1,000 with Singapore Airlines, Scoot or KrisShop qualifies the 2.4 mpd accelerator. Kris+ and Pelago do not count. Extra miles are deferred until after the year ends; don’t spend just to qualify.</p>
+        </div>
+      </details>}
       {periodKind === "statement-month" && (
         <label className="form-label">
           Statement cycle starts on day
@@ -372,14 +419,18 @@ function CardEditor({
           </span>
         </label>
       )}
-      <label className="check-label">
+      {capacities.length <= 1 && <label className="check-label">
         <input
           type="checkbox"
           checked={known}
           onChange={(e) => setKnown(e.target.checked)}
         />
         I have checked this period’s usage
-      </label>
+      </label>}
+      {capacities.length > 1 && <section className="setup-section"><h3>This month’s bonus usage</h3><p className="muted small">Each S$600 bucket is independent. Enter spend before our app records.</p>{capacities.map(bucket=><div className="bucket-field" key={bucket.group}>
+        <label className="check-label"><input type="checkbox" checked={bucketKnown[bucket.group!] ?? false} onChange={e=>setBucketKnown({...bucketKnown,[bucket.group!]:e.target.checked})} />{bucket.label} usage checked</label>
+        {bucketKnown[bucket.group!] && <label className="form-label">{bucket.label} opening spend (S$)<input type="number" min="0" max="1000000" step="0.01" value={bucketSpend[bucket.group!] ?? 0} onChange={e=>setBucketSpend({...bucketSpend,[bucket.group!]:Number(e.target.value)})} required /></label>}
+      </div>)}</section>}
       {lifetimeLimit !== undefined && (
         <label className="form-label">
           Promotion cashback earned before our records (S$)
@@ -398,9 +449,9 @@ function CardEditor({
           </span>
         </label>
       )}
-      {known && periodKind && (
+      {known && periodKind && capacities.length <= 1 && (
         <>
-          <label className="form-label">
+          {splitRewards ? <div className="setup-section"><p className="muted small">Split prior online spend by currency so DBS’s monthly bonus rounding stays accurate. Both share the S$1,000 cap.</p>{rewardGroups.map(group=><label className="form-label" key={group}>{group.endsWith("local") ? "SGD" : "Foreign-currency"} online spend before our records (S$)<input type="number" min="0" max="1000000" step="0.01" value={rewardSpend[group] ?? 0} onChange={e=>setRewardSpend({...rewardSpend,[group]:Number(e.target.value)})} required /></label>)}</div> : <label className="form-label">
             Bonus-eligible spend before our app records
             <input
               type="number"
@@ -417,7 +468,7 @@ function CardEditor({
                 : "Confirm the cycle date first. "}
               Purchases you record here are added automatically.
             </span>
-          </label>
+          </label>}
           {capacity.minimumSpendSgd !== null && (
             <label className="form-label">
               Total qualifying spend before our records
@@ -434,6 +485,11 @@ function CardEditor({
           )}
         </>
       )}
+      {benefits && <details className="purchase-details card-benefits"><summary>Benefits & things to know<ChevronRight size={15} /></summary>
+        <p className="muted small">Checked {formatDate(benefits.verifiedAt)} · {benefits.summary}</p>
+        {benefits.sections.map(section=><details className="benefit-section" key={section.id}><summary>{section.title}<ChevronRight size={15} /></summary>{section.items.map(item=><div className="benefit-item" key={item.title}><strong>{item.title}</strong>{item.status !== "Confirmed" && <span className="benefit-status">{item.status}</span>}<p>{item.detail}</p>{item.validUntil && <p className="muted small">Valid through {formatDate(item.validUntil)}</p>}<div className="benefit-sources">{item.sources.map(source=><a key={source.url} href={source.url} target="_blank" rel="noreferrer">{source.label}<ArrowUpRight size={12} /></a>)}</div></div>)}</details>)}
+        {benefits.caveats.map(note=><p className="muted small" key={note}>{note}</p>)}
+      </details>}
       <details className="purchase-details">
         <summary>
           Transfer cost allocation

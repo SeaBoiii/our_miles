@@ -32,6 +32,25 @@ function localDate(year: number, month: number, day: number): string {
     .slice(0, 10);
 }
 
+export function getCalendarQuarter(date: string): { start: string; end: string } {
+  const [year, month] = singaporeDate(date).split("-").map(Number);
+  const firstMonth = Math.floor((month - 1) / 3) * 3;
+  return { start: localDate(year, firstMonth, 1), end: localDate(year, firstMonth + 3, 1) };
+}
+
+/** Bank membership years start in the approval month; their end is exclusive. */
+export function getAnnualPeriod(date: string, start?: string, end?: string): { start: string; end: string } | null {
+  if (!start || !end) return null;
+  try {
+    const day = singaporeDate(date);
+    const first = singaporeDate(start);
+    const last = singaporeDate(end);
+    const [year, month, dateNumber] = first.split("-").map(Number);
+    if (dateNumber !== 1 || last !== localDate(year + 1, month - 1, 1) || day < first || day >= last) return null;
+    return { start: first, end: last };
+  } catch { return null; }
+}
+
 /** Statement cycles are [confirmed start day, next start day), including short months. */
 export function getPeriod(
   date: string,

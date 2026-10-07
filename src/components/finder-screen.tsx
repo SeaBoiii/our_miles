@@ -24,6 +24,7 @@ import type {
   PaymentMethod,
   Purchase,
   Recommendation,
+  RewardPartner,
 } from "@/lib/domain";
 import { formatMiles, formatMoney, makeId, today } from "@/lib/state";
 import type { Store, View } from "./miles-app";
@@ -67,6 +68,8 @@ export function FinderScreen({
   const [mccConfirmed, setMccConfirmed] = useState(false);
   const [excluded, setExcluded] = useState(false);
   const [processedOverseas, setProcessedOverseas] = useState(false);
+  const [recurring, setRecurring] = useState(false);
+  const [partner, setPartner] = useState<RewardPartner | "">("");
   const [recorded, setRecorded] = useState(false);
   const [recordedResult, setRecordedResult] = useState<Recommendation | null>(
     null,
@@ -104,6 +107,8 @@ export function FinderScreen({
         : {}),
       excluded,
       processedOverseas,
+      recurring,
+      ...(partner ? {rewardPartner:partner} : {}),
     }),
     [
       amount,
@@ -116,6 +121,8 @@ export function FinderScreen({
       mccConfirmed,
       excluded,
       processedOverseas,
+      recurring,
+      partner,
     ],
   );
   const results = useMemo(
@@ -355,8 +362,15 @@ export function FinderScreen({
                   <option value="card">Card directly</option>
                   <option value="apple-pay">Apple Pay</option>
                   <option value="google-pay">Google Pay</option>
+                  <option value="samsung-pay">Samsung Pay</option>
                   <option value="mobile-wallet">Other mobile wallet</option>
                 </select>
+              </label>
+              <label className="check-label"><input type="checkbox" checked={recurring} onChange={e=>{setRecurring(e.target.checked);setRecorded(false);}} />Recurring payment / subscription</label>
+              <label className="form-label">Confirmed KrisFlyer UOB partner payment
+                <select value={partner} onChange={e=>{setPartner(e.target.value as RewardPartner | "");setRecorded(false);}}>
+                  <option value="">None / not confirmed</option><option value="singapore-airlines">Singapore Airlines directly</option><option value="scoot">Scoot directly</option><option value="krisshop">KrisShop</option><option value="krisplus">Kris+ app</option><option value="pelago">Pelago</option>
+                </select><span className="muted small">Choose only when paying through the eligible partner path. A merchant name alone doesn’t confirm 3 mpd.</span>
               </label>
               <label className="form-label">
                 Specific purchase category
