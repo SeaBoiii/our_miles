@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Our Miles">
+  <rect width="512" height="512" fill="#173d35"/>
+  <path d="M160 352C160 240 352 272 352 160" fill="none" stroke="#f7f2e8" stroke-width="30" stroke-linecap="round"/>
+  <circle cx="160" cy="352" r="24" fill="#f7f2e8"/>
+  <circle cx="352" cy="160" r="24" fill="#f7f2e8"/>
+</svg>

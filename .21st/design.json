@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "project": {
+    "name": "our_miles",
+    "productType": "Private mobile-first miles wallet for Aleem and Nurul",
+    "stack": ["Next.js", "React", "TypeScript", "Tailwind CSS", "Radix Dialog", "Motion"]
+  },
+  "sources": {
+    "tokens": [],
+    "components": [],
+    "assets": [],
+    "instructions": [
+      "AGENTS.md"
+    ]
+  },
+  "design": {
+    "colorMode": "light",
+    "colors": { "canvas": "#f7f2e8", "paper": "#fffdf8", "ink": "#122821", "action": "#173d35", "secondary": "#5c685e" },
+    "typography": { "editorial": "Instrument Serif", "controls": "system UI", "numbers": "tabular lining figures" },
+    "spacing": {},
+    "radius": {},
+    "shadows": {},
+    "motion": {},
+    "density": "composed, mobile first, progressive disclosure"
+  },
+  "components": {
+    "installed": [],
+    "preferredPrimitives": ["Radix Dialog"],
+    "patterns": ["four labeled bottom destinations", "instant card comparison", "bottom sheets", "textual uncertainty", "owner-first recommendation"]
+  },
+  "constraints": {
+    "must": ["recommendation correctness", "one-handed phone usability", "explicit demo isolation", "source-verified financial rules", "reduced motion"],
+    "avoid": ["metric card grids", "glassmorphism", "decorative gradients", "literal airplane clipart", "headline-mpd-only ranking"]
+  },
+  "decisions": [{ "direction": "Field Notes", "reason": "Editorial family resemblance with a task-forward finder and restrained shared travel context", "source": "docs/DESIGN_RESEARCH.md" }],
+  "evidence": [
+    {
+      "fact": "project.instructions",
+      "source": "AGENTS.md"
+    }
+  ],
+  "generatedAt": "2026-10-05T11:57:00.746Z"
+}
